@@ -773,6 +773,46 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# Core keeps the default challenge in signet/, and custom challenges in
+# signet_<message-start>/. Explicitly supplying the default remains default.
+CUSTOM_SIGNET_DD="$WORKDIR/custom-signet"
+mkdir -p "$CUSTOM_SIGNET_DD"
+OUT_CUSTOM_SIGNET="$("$SHIM" --print-cmd -datadir="$CUSTOM_SIGNET_DD" -signet -signetchallenge=51 2>/dev/null)"
+if printf '%s' "$OUT_CUSTOM_SIGNET" | grep -q -- "--datadir ${CUSTOM_SIGNET_DD}/signet_" \
+  && printf '%s' "$OUT_CUSTOM_SIGNET" | grep -q -- "${CUSTOM_SIGNET_DD}/signet_54d26fbd" \
+  && [[ -d "$CUSTOM_SIGNET_DD/signet_54d26fbd" ]]; then
+  echo "ok - custom signet uses challenge-derived datadir"
+  PASS=$((PASS + 1))
+else
+  echo "not ok - custom signet uses challenge-derived datadir (got: $OUT_CUSTOM_SIGNET)"
+  FAIL=$((FAIL + 1))
+fi
+
+EMPTY_SIGNET_DD="$WORKDIR/empty-signet"
+mkdir -p "$EMPTY_SIGNET_DD"
+printf 'legacy custom data\n' >"$EMPTY_SIGNET_DD/signet/legacy.marker"
+OUT_EMPTY_SIGNET="$("$SHIM" --print-cmd -datadir="$EMPTY_SIGNET_DD" -signet -signetchallenge= 2>/dev/null)"
+if printf '%s' "$OUT_EMPTY_SIGNET" | grep -q -- "--datadir ${EMPTY_SIGNET_DD}/signet_1406e058" \
+  && [[ -f "$EMPTY_SIGNET_DD/signet/legacy.marker" ]]; then
+  echo "ok - empty challenge gets its own datadir and preserves legacy signet data"
+  PASS=$((PASS + 1))
+else
+  echo "not ok - empty challenge datadir and legacy preservation (got: $OUT_EMPTY_SIGNET)"
+  FAIL=$((FAIL + 1))
+fi
+
+DEFAULT_SIGNET_DD="$WORKDIR/default-signet"
+mkdir -p "$DEFAULT_SIGNET_DD"
+OUT_DEFAULT_SIGNET="$("$SHIM" --print-cmd -datadir="$DEFAULT_SIGNET_DD" -signet -signetchallenge=512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae 2>/dev/null)"
+if printf '%s' "$OUT_DEFAULT_SIGNET" | grep -q -- "--datadir ${DEFAULT_SIGNET_DD}/signet" \
+  && ! printf '%s' "$OUT_DEFAULT_SIGNET" | grep -q -- "--datadir ${DEFAULT_SIGNET_DD}/signet_"; then
+  echo "ok - explicit default challenge keeps signet datadir"
+  PASS=$((PASS + 1))
+else
+  echo "not ok - explicit default challenge keeps signet datadir (got: $OUT_DEFAULT_SIGNET)"
+  FAIL=$((FAIL + 1))
+fi
+
 assert_fail_msg "-signetchallenge rejects non-hex" "Error: -signetchallenge must be hex, not 'abc'." \
   env RBITCOIN_NODE="$FAKE" "$SHIM" --print-cmd -datadir="$DATADIR" -regtest -signetchallenge=abc
 assert_fail_msg "-signetchallenge rejects duplicates" "Error: -signetchallenge cannot be multiple values." \

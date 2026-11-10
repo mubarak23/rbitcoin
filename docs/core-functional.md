@@ -38,7 +38,14 @@ shipped RPC). `--dry-run` prints the command and writes `config.ini`
 never calls this.
 
 `scripts/core-functional/bitcoind` is the TestNode binary: `-datadir=DIR`
-→ `--datadir DIR/regtest` (`bitcoind.pid` under `DIR/regtest`),
+→ `--datadir DIR/<network>` (`bitcoind.pid` under that directory). A signet
+using a non-default `-signetchallenge` uses `signet_<message-start>`; the
+default challenge, whether explicit or implicit, uses `signet`. An explicitly
+empty challenge also has its own suffix. Existing data in `signet/` is left
+untouched when a custom challenge starts after upgrade: the adapter cannot
+distinguish legacy custom-chain data from default signet data safely. Move
+legacy custom data to its derived `signet_<message-start>/` directory yourself
+only after confirming which challenge it belongs to.
 `-rpcport`/`-port`/`bitcoin.conf` → `--rpc-listen` / `--listen` on
 127.0.0.1, `--no-seeds`. It adds `--sh-index` only when the datadir parent
 is `{script}_{n}` for a test that reads address or scripthash history

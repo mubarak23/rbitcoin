@@ -215,6 +215,36 @@ fn getblockcount_token_against_mock() {
 }
 
 #[test]
+fn signet_auth_failure_suggests_checking_the_custom_challenge() {
+    let dir = tmp_datadir();
+    std::fs::write(dir.join("rpc.token"), "s3cret").unwrap();
+    let (port, h) = spawn_rpc_mock("different", "0");
+    let cfg = match parse_args(&os_args(&[
+        "rbitcoin-cli",
+        "--network",
+        "signet",
+        "--datadir",
+        dir.to_str().unwrap(),
+        "--rpc-url",
+        &format!("127.0.0.1:{port}"),
+        "getblockcount",
+    ])) {
+        Ok(Action::Call(cfg)) => cfg,
+        Ok(_) => panic!("expected Action::Call"),
+        Err(e) => panic!("signet CLI args must parse, got: {e}"),
+    };
+
+    let err = dispatch_call(&cfg).unwrap_err();
+    assert!(err.contains("RPC unauthorized"), "{err}");
+    assert!(
+        err.contains("Is your -signetchallenge correct for custom signets?"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = h.join();
+}
+
+#[test]
 fn missing_auth_is_unauthorized() {
     let (port, _h) = spawn_rpc_mock("alice", "0");
     let dir = tmp_datadir();

@@ -2,9 +2,9 @@
 """Test-only bitcoind → rbitcoin-node adapter. Not the operator CLI.
 
 Maps Core TestNode argv + bitcoin.conf onto kebab rbitcoin-node flags
-(no Core aliases on the node). `-datadir=DIR` becomes `--datadir DIR/regtest`
-so the harness cookie lands at `DIR/regtest/.cookie` (mirrored from the
-node's `{datadir}/rpc.token` as `__cookie__:<token>`).
+(no Core aliases on the node). `-datadir=DIR` becomes a network-specific
+node datadir (for example, `DIR/regtest` or `DIR/signet_<magic>`), so the
+harness cookie lands beside that network's node data.
 
 Tests speak to a JSON-RPC proxy on `-rpcport`. The node listens on
 `rpcport+10000` and Esplora on `rpcport+20000` (not node-RPC+1: Core
@@ -14,6 +14,7 @@ gives consecutive rpcports, so that collided across nodes).
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -89,7 +90,7 @@ def wants_sh_index(datadir: Path) -> bool:
 
 
 def publish_cookie_file(path: Path, line: str) -> None:
-    """Publish `DIR/regtest/.cookie` so a reader never sees a torn line.
+    """Publish the network datadir cookie without exposing a torn line.
 
     Core `get_auth_cookie` splits the file on `:` and indexes the password
     with no retry. `Path.write_text` truncates first, so a concurrent read
@@ -112,8 +113,30 @@ def parse_kv(arg: str) -> tuple[str, str | None]:
 
 
 def is_hex_script(raw: str) -> bool:
-    """Even-length hex. Odd length and empty are not a script push."""
-    return bool(raw) and len(raw) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]+", raw) is not None
+    """Even-length hex, including an explicitly empty script."""
+    return len(raw) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]*", raw) is not None
+
+
+DEFAULT_SIGNET_CHALLENGE = (
+    "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430"
+    "210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae"
+)
+
+
+def signet_magic_hex(challenge_hex: str) -> str:
+    """Core message-start bytes: first four bytes of Hash(ser_string(challenge))."""
+    challenge = bytes.fromhex(challenge_hex)
+    size = len(challenge)
+    if size < 253:
+        compact_size = bytes([size])
+    elif size <= 0xFFFF:
+        compact_size = b"\xfd" + size.to_bytes(2, "little")
+    elif size <= 0xFFFFFFFF:
+        compact_size = b"\xfe" + size.to_bytes(4, "little")
+    else:
+        compact_size = b"\xff" + size.to_bytes(8, "little")
+    digest = hashlib.sha256(hashlib.sha256(compact_size + challenge).digest()).digest()
+    return digest[:4].hex()
 
 
 def parse_port(raw: str | None, flag: str) -> str:
@@ -699,8 +722,10 @@ def translate(
             file=sys.stderr,
         )
         raise SystemExit(1)
-    if len(signet_challenges) == 1:
-        raw = signet_challenges[0]
+    conf = read_conf(datadir / "bitcoin.conf")
+    challenge = signet_challenges[0] if signet_challenges else conf.get("signetchallenge")
+    if challenge is not None:
+        raw = challenge
         if not is_hex_script(raw):
             print(
                 f"Error: -signetchallenge must be hex, not '{raw}'.",
@@ -709,7 +734,6 @@ def translate(
             raise SystemExit(1)
         extra_node_args.append(f"--signet-challenge={raw}")
 
-    conf = read_conf(datadir / "bitcoin.conf")
     if conf.get("regtest") in ("1", "true"):
         network = "regtest"
     if conf.get("signet") in ("1", "true"):
@@ -744,7 +768,11 @@ def translate(
         if v:
             extra_node_args.extend(node_args("whitelist", v))
 
-    node_dir = datadir / network
+    network_dir = network
+    if network == "signet" and challenge is not None:
+        if challenge.lower() != DEFAULT_SIGNET_CHALLENGE:
+            network_dir = f"signet_{signet_magic_hex(challenge)}"
+    node_dir = datadir / network_dir
     node_dir.mkdir(parents=True, exist_ok=True)
     maybe_seed_store(node_dir)
 

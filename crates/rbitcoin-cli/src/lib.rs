@@ -654,13 +654,20 @@ fn rpc_call(
     cmd: &str,
     params: &Value,
 ) -> Result<Value, String> {
-    match stream {
+    let result = match stream {
         RpcStream::Unix(s) => rpc_http(s, "localhost", 0, None, cmd, params),
         RpcStream::Tcp { stream, host, port } => {
             let token = read_token(&token_path(cfg))?;
             rpc_http(stream, &host, port, Some(&token), cmd, params)
         }
-    }
+    };
+    result.map_err(|err| {
+        if cfg.network == Network::Signet && err.starts_with("RPC unauthorized") {
+            format!("{err}. Is your -signetchallenge correct for custom signets?")
+        } else {
+            err
+        }
+    })
 }
 
 #[doc(hidden)]
