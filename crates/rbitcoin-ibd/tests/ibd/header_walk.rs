@@ -5154,6 +5154,33 @@ fn unasked_empty_replies_keep_the_candidate() {
     assert!(st.header_walk.dead_ends.is_empty());
 }
 
+/// A late empty reply still answers an expired ask after another ask has
+/// expired since, so the candidate is abandoned once every peer has answered.
+#[test]
+fn a_late_empty_reply_counts_after_a_later_ask_expired() {
+    let (_dir, mut hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("header-walk-late-empty");
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let a1 = mine(gen, 1);
+    let (s0, _rx0) = slot(0);
+    let (s1, _rx1) = slot(1);
+    let (s2, _rx2) = slot(2);
+    let mut st = IbdWorkState::new(vec![s0, s1, s2], Some(gen), Some(0));
+    fill_queue(&mut st);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    apply(&mut st, &hub, 0, vec![a1]);
+    set_min_work(&mut hub, [0xff; 32]);
+    for peer in [0, 1] {
+        note_lane(&mut st, peer);
+        assert_eq!(expire_header_ask(&mut st), Some(peer));
+    }
+    apply(&mut st, &hub, 0, vec![]);
+    asked_empty(&mut st, &hub, 1);
+    asked_empty(&mut st, &hub, 2);
+    assert_eq!(st.header_walk.tip_hash(), Some(gen));
+    assert!(st.header_walk.dead_ends.contains(&a1.block_hash()));
+}
+
 /// With no checkpoint the walk tip is its base. Every peer answering empty
 /// there does not mark it dead, so a later batch on it extends the walk.
 #[test]

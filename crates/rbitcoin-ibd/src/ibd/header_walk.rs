@@ -1255,12 +1255,16 @@ pub fn rewind_above(st: &mut IbdWorkState, hub: &ChainHub, height: u32) {
 }
 
 /// Pop checkpoints above `height`, or the current tip when `dead` is set.
-/// `dead` is the hash that every peer left empty.
+/// `dead` is the hash that every peer left empty. The base is not a
+/// look-ahead tip, so it is never marked dead.
 #[doc(hidden)]
 pub fn rewind_to(st: &mut IbdWorkState, hub: &ChainHub, height: u32, dead: Option<BlockHash>) {
     let dead_height = st.header_walk.tip_height();
-    if let Some(dead) = dead {
-        note_dead(st, dead);
+    let marked = dead.filter(|hash| st.header_walk.base_hash != Some(*hash));
+    if dead.is_some() {
+        if let Some(hash) = marked {
+            note_dead(st, hash);
+        }
         st.header_walk.checkpoints.pop();
     } else {
         while st
@@ -1301,7 +1305,7 @@ pub fn rewind_to(st: &mut IbdWorkState, hub: &ChainHub, height: u32, dead: Optio
     drop_queue_above(st, keep, &keep_hashes);
     if dead.is_some() {
         st.header_walk.emptied.clear();
-        if let Some(dead) = dead {
+        if let Some(dead) = marked {
             rbitcoin_log::warn!(
                 "ibd: headers dead-end hash={dead} height={dead_height} rewind={keep}"
             );
@@ -2563,12 +2567,12 @@ pub fn refill_misses_checkpoint(st: &IbdWorkState, tail_h: u32, headers: &[Heade
 
 /// Every alive peer answered an ask empty before the work floor. True when the
 /// walk consumed the reply. An empty reply nobody asked for says nothing about
-/// the tip. The base is not a look-ahead tip, so it is never marked dead.
+/// the tip. A peer whose ask expired is still owed an answer.
 pub fn note_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize, ask: HeaderAsk) -> bool {
     if !st.header_walk.origin || !below_floor(hub, &st.header_walk.tip_work()) {
         return false;
     }
-    if ask != HeaderAsk::Unsolicited {
+    if ask != HeaderAsk::Unsolicited || st.header_walk.header_misses.contains_key(&peer) {
         st.header_walk.emptied.insert(peer);
     }
     let tall: Vec<usize> = st
@@ -2586,11 +2590,7 @@ pub fn note_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize, ask: Heade
         let _ = send_getheaders(st, hub);
         return true;
     }
-    if st.header_walk.tip_hash() == st.header_walk.base_hash {
-        st.header_walk.emptied.clear();
-    } else {
-        rewind(st, hub);
-    }
+    rewind(st, hub);
     let _ = send_getheaders(st, hub);
     true
 }
