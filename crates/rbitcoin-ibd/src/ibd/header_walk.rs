@@ -189,6 +189,9 @@ pub struct HeaderWalk {
     pub walk: Lane,
     /// Expired asks. Not written to `header.adopt`.
     pub header_misses: HashMap<usize, u8>,
+    /// Walk tip each peer's last walk or challenge ask named, until that
+    /// peer's next headers reply. Not written to `header.adopt`.
+    pub asked_tip: HashMap<usize, BlockHash>,
     /// Difficulty at `base_hash`, restored when every checkpoint is rewound.
     pub base_diff: DiffSnap,
     /// Heavier-so-far alternate that has not yet passed the candidate.
@@ -827,6 +830,7 @@ pub fn forget_walk_peer(st: &mut IbdWorkState, peer: usize) {
     st.header_walk.walk_quiet.remove(&peer);
     st.header_walk.header_timeout_peers.remove(&peer);
     st.header_walk.header_misses.remove(&peer);
+    st.header_walk.asked_tip.remove(&peer);
     if st.header_walk.reserved == Some(peer) {
         st.header_walk.reserved = None;
     }
@@ -2566,13 +2570,18 @@ pub fn refill_misses_checkpoint(st: &IbdWorkState, tail_h: u32, headers: &[Heade
 }
 
 /// Every alive peer answered an ask empty before the work floor. True when the
-/// walk consumed the reply. An empty reply nobody asked for says nothing about
-/// the tip. A peer whose ask expired is still owed one answer.
-pub fn note_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize, ask: HeaderAsk) -> bool {
+/// walk consumed the reply. `asked` is the walk tip this peer's ask named; an
+/// empty reply says nothing about any other tip.
+pub fn note_empty(
+    st: &mut IbdWorkState,
+    hub: &ChainHub,
+    peer: usize,
+    asked: Option<BlockHash>,
+) -> bool {
     if !st.header_walk.origin || !below_floor(hub, &st.header_walk.tip_work()) {
         return false;
     }
-    if ask != HeaderAsk::Unsolicited || st.header_walk.header_misses.remove(&peer).is_some() {
+    if asked.is_some() && asked == st.header_walk.tip_hash() {
         st.header_walk.emptied.insert(peer);
     }
     let tall: Vec<usize> = st
@@ -2966,7 +2975,7 @@ pub enum HeaderAsk {
     Unsolicited,
     /// Reply inside the window.
     InWindow,
-    /// The window expired. The tip has not moved, so the reply can still extend it.
+    /// The window expired. The reply still extends the tip when it builds on it.
     Late,
 }
 
@@ -3210,6 +3219,7 @@ pub fn arm_header_ask(
     let above = path_top(st, hub).map(|(_, height)| height).unwrap_or(0);
     if let Some(peer) = take_challenge(st) {
         if ask_header_peer(st, hub, peer, &tips)? {
+            note_asked_tip(st, peer);
             st.header_walk.challenge_open = Some(peer);
             return Ok(true);
         }
@@ -3263,7 +3273,20 @@ pub fn arm_header_ask(
     let Some(peer) = st.header_walk.reserved else {
         return Ok(false);
     };
-    ask_header_peer(st, hub, peer, &tips)
+    let sent = ask_header_peer(st, hub, peer, &tips)?;
+    if sent {
+        note_asked_tip(st, peer);
+    }
+    Ok(sent)
+}
+
+/// Record the walk tip a walk or challenge ask to `peer` named.
+#[doc(hidden)]
+pub fn note_asked_tip(st: &mut IbdWorkState, peer: usize) {
+    match st.header_walk.tip_hash() {
+        Some(tip) => st.header_walk.asked_tip.insert(peer, tip),
+        None => st.header_walk.asked_tip.remove(&peer),
+    };
 }
 
 /// Time from connect to the first block body. `None` until a body arrives.
@@ -4265,6 +4288,7 @@ pub fn parse_adopt(bytes: &[u8]) -> Option<HeaderWalk> {
         probe_top: None,
         walk: Lane::default(),
         header_misses: HashMap::new(),
+        asked_tip: HashMap::new(),
         base_diff,
         challenger: None,
         adopt_retired: false,

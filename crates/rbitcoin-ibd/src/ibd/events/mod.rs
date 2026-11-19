@@ -709,6 +709,7 @@ pub fn plan_header_reply(
     peer: usize,
     headers: Vec<bitcoin::block::Header>,
 ) -> HeaderPlan {
+    let asked = st.header_walk.asked_tip.remove(&peer);
     // Failed proof is not a low-work miss. Drop the sender and the ask so
     // the next live peer can walk. Leaving the ask in flight blocks that peer.
     if headers
@@ -735,7 +736,7 @@ pub fn plan_header_reply(
     let mut inflight = super::header_walk::InFlight::capture(st);
     if headers.is_empty() {
         inflight.hold(st);
-        if super::header_walk::note_empty(st, hub, peer, ask) {
+        if super::header_walk::note_empty(st, hub, peer, asked) {
             return HeaderPlan::Done;
         }
         return if on_empty_headers(st, hub) {
