@@ -735,7 +735,7 @@ pub fn plan_header_reply(
     let mut inflight = super::header_walk::InFlight::capture(st);
     if headers.is_empty() {
         inflight.hold(st);
-        if super::header_walk::note_empty(st, hub, peer) {
+        if super::header_walk::note_empty(st, hub, peer, ask) {
             return HeaderPlan::Done;
         }
         return if on_empty_headers(st, hub) {

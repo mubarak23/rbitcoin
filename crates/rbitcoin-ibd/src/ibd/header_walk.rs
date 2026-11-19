@@ -2561,13 +2561,16 @@ pub fn refill_misses_checkpoint(st: &IbdWorkState, tail_h: u32, headers: &[Heade
     false
 }
 
-/// Every alive peer answered empty before the work floor. True when the walk
-/// consumed the reply.
-pub fn note_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize) -> bool {
+/// Every alive peer answered an ask empty before the work floor. True when the
+/// walk consumed the reply. An empty reply nobody asked for says nothing about
+/// the tip. The base is not a look-ahead tip, so it is never marked dead.
+pub fn note_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize, ask: HeaderAsk) -> bool {
     if !st.header_walk.origin || !below_floor(hub, &st.header_walk.tip_work()) {
         return false;
     }
-    st.header_walk.emptied.insert(peer);
+    if ask != HeaderAsk::Unsolicited {
+        st.header_walk.emptied.insert(peer);
+    }
     let tall: Vec<usize> = st
         .slots
         .iter()
@@ -2583,7 +2586,11 @@ pub fn note_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize) -> bool {
         let _ = send_getheaders(st, hub);
         return true;
     }
-    rewind(st, hub);
+    if st.header_walk.tip_hash() == st.header_walk.base_hash {
+        st.header_walk.emptied.clear();
+    } else {
+        rewind(st, hub);
+    }
     let _ = send_getheaders(st, hub);
     true
 }
