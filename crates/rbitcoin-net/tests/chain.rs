@@ -7453,15 +7453,14 @@ fn chain_pin_rpc_tip_wait_blocks_until_the_job_finishes() {
     worker.join().expect("job");
 }
 
-/// A disconnect that fails before the tip moves keeps the confirmed mark.
-/// `<` to `<=` drops it while the block is still the tip.
+/// A disconnect that fails before the tip moves leaves that block connected.
 #[test]
 fn chain_pin_a_stuck_disconnect_keeps_the_confirmed_mark() {
     let (dir, hub) = tmp_hub();
     hub.confirm_empty_regtest(1).unwrap();
     let tip = hub.tip_hash().unwrap();
     let height = hub.tip_height().unwrap();
-    assert!(hub.confirmed.read().unwrap().contains(&tip));
+    assert!(hub.is_connected(&tip));
     hub.query
         .set_pruneheight(Some(Height(height)))
         .expect("prune height");
@@ -7474,8 +7473,8 @@ fn chain_pin_a_stuck_disconnect_keeps_the_confirmed_mark() {
     );
     assert_eq!(hub.tip_height(), Some(height));
     assert!(
-        hub.confirmed.read().unwrap().contains(&tip),
-        "the tip did not move, so the confirmed mark stays"
+        hub.is_connected(&tip),
+        "the tip did not move, so the block stays connected"
     );
     let _ = std::fs::remove_dir_all(dir);
 }

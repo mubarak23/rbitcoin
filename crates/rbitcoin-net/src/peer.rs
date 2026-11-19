@@ -1088,9 +1088,9 @@ mod peer_session_pins {
         serve_getdata_full_block, serve_getdata_tail, serve_mempool_getdata,
         tip_event_for_announce, tip_follow_locator, tx_announce_inbound_gated,
         tx_announce_maybe_count, tx_announce_peer_ok, tx_announce_should_queue,
-        tx_inv_candidate_ok, wait_peer_verack, DecodeQueue, HandshakePolicy, PeerFollowState,
-        ADDRFETCH_TIMEOUT_SECS, BAN_SCORE_THRESHOLD, BLOCK_GETDATA_TIMEOUT, MAX_ADDR_TO_SEND,
-        MAX_BLOCKS_TO_ANNOUNCE, MAX_LOCATOR_SZ, MIN_PEER_PROTO_VERSION,
+        tx_inv_candidate_ok, wait_peer_verack, DecodeQueue, FullBlockReply, HandshakePolicy,
+        PeerFollowState, ADDRFETCH_TIMEOUT_SECS, BAN_SCORE_THRESHOLD, BLOCK_GETDATA_TIMEOUT,
+        MAX_ADDR_TO_SEND, MAX_BLOCKS_TO_ANNOUNCE, MAX_LOCATOR_SZ, MIN_PEER_PROTO_VERSION,
     };
     use crate::peers::{PeerConnType, PeerHub, PeerOut};
     use bitcoin::hashes::Hash;
@@ -1706,20 +1706,48 @@ mod peer_session_pins {
         hub.accept_block(main).expect("advance the tip");
         let side = pow_header(&hub, genesis, gtime.saturating_add(1));
         let hash = side.block_hash();
+        let side_time = side.time;
         hub.ensure_header(&side).expect("side header");
         hub.cache.stage_servable(bitcoin::Block {
             header: side,
             txdata: Vec::new(),
         });
+        assert!(
+            !hub.cache.has_body(&hash),
+            "staged body is not a stored body"
+        );
+        assert!(hub.cache.has_servable(&hash), "staged");
+        assert!(
+            !hub.query
+                .is_block_archived(&hash.to_byte_array())
+                .expect("archive"),
+            "header-only is not archived"
+        );
+        let stored = hub
+            .query
+            .get_header_by_hash(&hash.to_byte_array())
+            .expect("header read");
+        assert!(stored.is_some(), "side header is stored");
+        let height = hub
+            .query
+            .height_of_hash(&hash.to_byte_array())
+            .expect("height");
+        assert!(height.is_none(), "fork height {height:?}");
+        let tip_time = hub.tip_header().expect("tip header").time;
+        assert!(
+            u64::from(tip_time).saturating_sub(u64::from(side_time))
+                >= crate::chain::STALE_RELAY_AGE_LIMIT_SECS,
+            "tip {tip_time} side {side_time}"
+        );
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         let served = rt
-            .block_on(serve_getdata_full_block(&hub, &tx, None, &hash))
+            .block_on(serve_getdata_full_block(&hub, &tx, None, &hash, false))
             .expect("serve");
-        assert!(served, "a staged stale body is withheld");
+        assert_eq!(served, FullBlockReply::Withheld);
     }
 
     /// A confirmed coinbase is still announced when the peer's filter is above
