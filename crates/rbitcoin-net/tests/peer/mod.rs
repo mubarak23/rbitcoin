@@ -10270,19 +10270,26 @@ async fn operator_block_fetch_released_when_the_session_ends() {
     let _ = std::fs::remove_dir_all(dir.path());
 }
 
-/// Core `FetchBlock` runs `RemoveBlockRequest(hash, std::nullopt)` first. A
-/// block in flight from session A moves to B: A's download window drops it
-/// at once, A's heartbeat drops it from A's blocks in flight, and A ending
-/// does not release B's ask, so a third session cannot claim it.
-#[tokio::test]
-async fn operator_block_fetch_moves_the_ask_off_the_previous_session() {
-    let (dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("getblockfrompeer-move");
+/// Two live sessions, A and B, on one hub. A's `getblockfrompeer` ask for
+/// `hash` is in flight, then a second `getblockfrompeer` moves it to B.
+struct MovedAsk {
+    dir: rbitcoin_query::testutil::TempDir,
+    hub: Arc<ChainHub>,
+    a: Arc<rbitcoin_net::peers::LivePeer>,
+    b: Arc<rbitcoin_net::peers::LivePeer>,
+    a_tx: mpsc::UnboundedSender<PeerOut>,
+    a_rx: mpsc::UnboundedReceiver<PeerOut>,
+    a_follow: SessionFollow,
+    b_follow: SessionFollow,
+}
+
+async fn moved_ask(label: &str, ports: (u16, u16), hash: BlockHash) -> MovedAsk {
+    let (dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled(label);
     let hub = Arc::new(hub);
     hub.ensure_genesis().unwrap();
-    let hash = BlockHash::from_byte_array([0x6b; 32]);
     let peers = rbitcoin_net::peers::PeerHub::new();
-    let a = outbound_test_peer(&peers, 18464);
-    let b = outbound_test_peer(&peers, 18465);
+    let a = outbound_test_peer(&peers, ports.0);
+    let b = outbound_test_peer(&peers, ports.1);
     let (a_tx, mut a_rx) = mpsc::unbounded_channel();
     let (b_tx, mut b_rx) = mpsc::unbounded_channel();
     a.attach_out(a_tx.clone());
@@ -10294,7 +10301,11 @@ async fn operator_block_fetch_moves_the_ask_off_the_previous_session() {
         state: PeerFollowState::new(),
         session_id: Some(a.id),
     };
-    let mut b_follow = PeerFollowState::new();
+    let mut b_follow = SessionFollow {
+        hub: Arc::clone(&hub),
+        state: PeerFollowState::new(),
+        session_id: Some(b.id),
+    };
 
     peers.fetch_block_from(a.id, hash).unwrap();
     heartbeat_once(&hub, &a_tx, &mut a_follow.state, &a).await;
@@ -10303,7 +10314,7 @@ async fn operator_block_fetch_moves_the_ask_off_the_previous_session() {
     assert_eq!(hub.block_ask_owner(&hash), Some(a.id));
 
     peers.fetch_block_from(b.id, hash).unwrap();
-    heartbeat_once(&hub, &b_tx, &mut b_follow, &b).await;
+    heartbeat_once(&hub, &b_tx, &mut b_follow.state, &b).await;
     assert!(asked_witness(&sent(&mut b_rx), hash), "B asks again");
     assert_eq!(hub.block_ask_owner(&hash), Some(b.id), "B owns the ask");
     assert!(b.block_download_owns(&hash));
@@ -10311,11 +10322,60 @@ async fn operator_block_fetch_moves_the_ask_off_the_previous_session() {
         !a.block_download_owns(&hash),
         "A's stall timer no longer counts the hash"
     );
+    assert!(
+        a_follow.state.requested_blocks.contains(&hash),
+        "A has not run a heartbeat since the move"
+    );
+    MovedAsk {
+        dir,
+        hub,
+        a,
+        b,
+        a_tx,
+        a_rx,
+        a_follow,
+        b_follow,
+    }
+}
+
+/// A block whose parent the hub does not know. Asked for, it is parked
+/// while the parent's headers are fetched. Unasked, it is misbehavior.
+fn orphan_block() -> bitcoin::Block {
+    rbitcoin_consensus::mine_regtest_paying(
+        BlockHash::from_byte_array([0x77; 32]),
+        1_296_688_700,
+        2,
+        ScriptBuf::from_bytes(vec![0x51]),
+        vec![],
+    )
+}
+
+/// Core `FetchBlock` runs `RemoveBlockRequest(hash, std::nullopt)` first. A
+/// block in flight from session A moves to B: A's download window drops it
+/// at once, A's heartbeat drops it from A's blocks in flight, and A ending
+/// does not release B's ask, so a third session cannot claim it.
+#[tokio::test]
+async fn operator_block_fetch_moves_the_ask_off_the_previous_session() {
+    let hash = BlockHash::from_byte_array([0x6b; 32]);
+    let MovedAsk {
+        dir,
+        hub,
+        a,
+        a_tx,
+        mut a_rx,
+        mut a_follow,
+        b_follow,
+        ..
+    } = moved_ask("getblockfrompeer-move", (18464, 18465), hash).await;
 
     heartbeat_once(&hub, &a_tx, &mut a_follow.state, &a).await;
     assert!(
         !a_follow.state.requested_blocks.contains(&hash),
         "A no longer treats a body for this hash as requested"
+    );
+    assert!(
+        !a_follow.state.has_blocks_in_flight(),
+        "A's ping timeout runs"
     );
     assert!(!asked_witness(&sent(&mut a_rx), hash));
 
@@ -10330,6 +10390,74 @@ async fn operator_block_fetch_moves_the_ask_off_the_previous_session() {
         !hub.claim_block_ask(&hash),
         "a third session cannot claim it"
     );
+    drop(b_follow);
+    let _ = std::fs::remove_dir_all(dir.path());
+}
+
+/// B, the new owner, ends before A's heartbeat, so the hub no longer lists
+/// the ask. A's body for the hash still takes the unrequested path.
+#[tokio::test]
+async fn operator_block_fetch_moved_body_is_unrequested_after_the_new_owner_ends() {
+    let block = orphan_block();
+    let hash = block.block_hash();
+    let MovedAsk {
+        dir,
+        hub,
+        a,
+        a_tx,
+        mut a_follow,
+        b_follow,
+        ..
+    } = moved_ask("getblockfrompeer-owner-gone", (18466, 18467), hash).await;
+    drop(b_follow);
+    assert_eq!(hub.block_ask_owner(&hash), None, "B released its ask");
+
+    on_block(&hub, &a_tx, &mut a_follow.state, Some(a.as_ref()), &block)
+        .await
+        .unwrap();
+    assert!(!a_follow.state.requested_blocks.contains(&hash));
+    assert!(!a_follow.state.has_blocks_in_flight());
+    assert!(
+        !a_follow.state.pending_blocks.contains_key(&hash),
+        "an unrequested body is not parked"
+    );
+    assert!(
+        a_follow.state.ban_score > 0,
+        "an unrequested orphan is misbehavior"
+    );
+    assert!(!a.block_ask_moved(&hash), "the mark is spent");
+    let _ = std::fs::remove_dir_all(dir.path());
+}
+
+/// A mutated body from A, after the ask moved to B, must not release B's
+/// ask.
+#[tokio::test]
+async fn operator_block_fetch_moved_mutated_body_keeps_the_new_owners_ask() {
+    let mut block = orphan_block();
+    let hash = block.block_hash();
+    block.txdata.push(block.txdata[0].clone());
+    assert_eq!(block.block_hash(), hash, "the header is unchanged");
+    let MovedAsk {
+        dir,
+        hub,
+        a,
+        b,
+        a_tx,
+        mut a_follow,
+        b_follow,
+        ..
+    } = moved_ask("getblockfrompeer-mutated", (18468, 18469), hash).await;
+
+    on_block(&hub, &a_tx, &mut a_follow.state, Some(a.as_ref()), &block)
+        .await
+        .unwrap();
+    assert_eq!(
+        hub.block_ask_owner(&hash),
+        Some(b.id),
+        "B still owns the ask"
+    );
+    assert!(!hub.claim_block_ask(&hash));
+    drop(b_follow);
     let _ = std::fs::remove_dir_all(dir.path());
 }
 

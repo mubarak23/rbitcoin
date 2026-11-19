@@ -82,6 +82,10 @@ pub fn outbound_queued_bytes(out: &PeerOut) -> usize {
 /// `getblockfrompeer` asks one session holds before its heartbeat drains them.
 pub const MAX_BLOCK_FETCHES: usize = 16;
 
+/// Moved-ask marks one session keeps. The heartbeat drains them, so this is
+/// only a bound; the hub owner still releases a mark lost to the clear.
+const MAX_MOVED_BLOCK_ASKS: usize = 1024;
+
 /// Why [`PeerHub::fetch_block_from`] did not queue a block ask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchBlockError {
@@ -544,6 +548,10 @@ pub struct LivePeer {
     pub v2_transport_ready: AtomicBool,
     /// Block hashes this session already asked other high-bandwidth peers to send.
     hb_body_fanned: Mutex<HashSet<BlockHash>>,
+    /// Asks this session made that `getblockfrompeer` moved to another
+    /// session. The session drops them from its blocks in flight even once
+    /// the hub no longer lists the ask.
+    moved_block_asks: Mutex<HashSet<BlockHash>>,
     /// `getblockfrompeer` hashes the session has not asked for yet. The
     /// session heartbeat drains them through its own getdata path.
     block_fetches: Mutex<Vec<BlockHash>>,
@@ -1641,6 +1649,34 @@ impl LivePeer {
         } else if i == 0 {
             d.since = Some(since.max(now));
         }
+    }
+
+    /// Another session took over this session's ask for `hash`.
+    pub fn note_block_ask_moved(&self, hash: BlockHash) {
+        let mut g = self
+            .moved_block_asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if g.len() >= MAX_MOVED_BLOCK_ASKS {
+            g.clear();
+        }
+        g.insert(hash);
+    }
+
+    /// `hash` was moved off this session and not asked here again since.
+    pub fn block_ask_moved(&self, hash: &BlockHash) -> bool {
+        self.moved_block_asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(hash)
+    }
+
+    /// This session dropped `hash`, or asks for it again.
+    pub fn clear_block_ask_moved(&self, hash: &BlockHash) {
+        self.moved_block_asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(hash);
     }
 
     pub fn end_block_download(&self) {
@@ -3584,6 +3620,7 @@ impl PeerHub {
             handshake_complete: AtomicBool::new(false),
             v2_transport_ready: AtomicBool::new(false),
             hb_body_fanned: Mutex::new(HashSet::new()),
+            moved_block_asks: Mutex::new(HashSet::new()),
             block_fetches: Mutex::new(Vec::new()),
             v1_transport: AtomicBool::new(false),
             wants_addrv2: AtomicBool::new(false),
