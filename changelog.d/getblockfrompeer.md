@@ -7,7 +7,5 @@ Added
   usual checks and is not marked valid because it was requested. The errors
   are Core's: `Block header missing`, `Block already downloaded`, `Peer does
   not exist`, `Pre-SegWit peer`, and `Peer not fully connected`. At most 16
-  asks wait on one session. As in Core, a body already in flight from
-  another peer moves to the named peer: the first peer stops counting it
-  toward its stall timeout, and a body it still sends is treated as
-  unrequested. The call does not restore `--prune-seqsigwit` data.
+  asks wait on one session. The call does not restore `--prune-seqsigwit`
+  data.
