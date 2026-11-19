@@ -5754,10 +5754,11 @@ fn retarget_stored_header_asks(
     last: BlockHash,
     requested_before: &HashSet<BlockHash>,
     have_bodies: &HashSet<BlockHash>,
+    session_id: Option<u64>,
 ) {
     let keep = connecting_header_path(hub, pending, last);
     let mut requested = requested_before.clone();
-    release_asks_off_path(hub, &mut requested, None, &keep);
+    release_asks_off_path_by(hub, &mut requested, session_id, &keep);
     apply.drop_asks = requested_before
         .iter()
         .copied()
@@ -5872,6 +5873,7 @@ fn classify_headers(
     requested_before: &HashSet<BlockHash>,
     have_bodies: &HashSet<BlockHash>,
     noban: bool,
+    session_id: Option<u64>,
 ) -> HeadersApply {
     let n = headers.len();
     let mut pending = pending_before.clone();
@@ -6027,6 +6029,7 @@ fn classify_headers(
                         last,
                         requested_before,
                         have_bodies,
+                        session_id,
                     );
                 }
             }
@@ -6350,12 +6353,24 @@ pub async fn on_headers(
     headers: &[bitcoin::block::Header],
 ) -> Result<(), NetError> {
     let noban = session.is_some_and(|s| s.session_noban());
+    let session_id = session.map(|s| s.id);
+    // An ask `getblockfrompeer` moved to another session is not this
+    // session's to drop when the header walk leaves it.
+    release_moved_block_asks(hub, follow, session);
     let pending = follow.pending_headers.clone();
     let requested = follow.requested_blocks.clone();
     let have_bodies: HashSet<BlockHash> = follow.pending_blocks.keys().copied().collect();
     let headers = headers.to_vec();
     let apply = run_header_job(hub, move |hub| {
-        classify_headers(hub, &headers, &pending, &requested, &have_bodies, noban)
+        classify_headers(
+            hub,
+            &headers,
+            &pending,
+            &requested,
+            &have_bodies,
+            noban,
+            session_id,
+        )
     })
     .await?;
     let accepted = !apply.misbehave;
@@ -8732,6 +8747,18 @@ pub fn release_asks_off_path(
     session: Option<&crate::peers::LivePeer>,
     path: &[BlockHash],
 ) {
+    release_asks_off_path_by(hub, requested, session.map(|s| s.id), path);
+}
+
+/// [`release_asks_off_path`] for a caller that holds only the session id,
+/// such as the header job.
+#[doc(hidden)]
+pub fn release_asks_off_path_by(
+    hub: &ChainHub,
+    requested: &mut HashSet<BlockHash>,
+    session_id: Option<u64>,
+    path: &[BlockHash],
+) {
     if path.is_empty() {
         return;
     }
@@ -8741,7 +8768,8 @@ pub fn release_asks_off_path(
         .filter(|h| !path.contains(h))
         .collect();
     for h in drop {
-        take_requested_block(hub, requested, session, &h);
+        requested.remove(&h);
+        hub.forget_asked_block_by(&h, session_id);
     }
 }
 

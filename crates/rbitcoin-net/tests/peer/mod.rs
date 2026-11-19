@@ -10461,6 +10461,93 @@ async fn operator_block_fetch_moved_mutated_body_keeps_the_new_owners_ask() {
     let _ = std::fs::remove_dir_all(dir.path());
 }
 
+/// A stored headers batch from A walks off a hash `getblockfrompeer` moved
+/// to B before A's heartbeat ran. A drops its own copy; B's ask stays.
+#[tokio::test]
+async fn operator_block_fetch_moved_ask_survives_the_old_peers_header_walk() {
+    let hash = BlockHash::from_byte_array([0x6c; 32]);
+    let MovedAsk {
+        dir,
+        hub,
+        a,
+        b,
+        a_tx,
+        a_rx: _a_rx,
+        mut a_follow,
+        b_follow,
+        ..
+    } = moved_ask("getblockfrompeer-header-walk", (18470, 18471), hash).await;
+    let mut prev = hub.tip_hash().unwrap();
+    let mut time = hub.tip_header().unwrap().time;
+    let mut headers = Vec::new();
+    for height in 1..=3 {
+        time += 60;
+        let block = rbitcoin_consensus::mine_regtest_paying(
+            prev,
+            time,
+            height,
+            ScriptBuf::from_bytes(vec![0x51]),
+            vec![],
+        );
+        prev = block.block_hash();
+        headers.push(block.header);
+    }
+
+    on_headers(&hub, &a_tx, &mut a_follow.state, Some(a.as_ref()), &headers)
+        .await
+        .unwrap();
+    assert!(hub.knows_header(&prev), "the batch is stored");
+    assert!(!a_follow.state.requested_blocks.contains(&hash));
+    assert_eq!(
+        hub.block_ask_owner(&hash),
+        Some(b.id),
+        "B still owns the ask"
+    );
+    assert!(
+        !hub.claim_block_ask(&hash),
+        "a third session cannot claim it"
+    );
+    drop(b_follow);
+    let _ = std::fs::remove_dir_all(dir.path());
+}
+
+/// The header walk releases an ask only when this session owns it or no
+/// session does.
+#[test]
+fn asks_off_the_header_path_keep_another_sessions_ask() {
+    let (dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("asks-off-path-owner");
+    let path = [BlockHash::from_byte_array([0x01; 32])];
+    let mine = BlockHash::from_byte_array([0x02; 32]);
+    let theirs = BlockHash::from_byte_array([0x03; 32]);
+    let unowned = BlockHash::from_byte_array([0x04; 32]);
+    hub.note_asked_block_by(mine, Some(1));
+    hub.note_asked_block_by(theirs, Some(2));
+    hub.note_asked_block_by(unowned, None);
+    let mut requested: HashSet<BlockHash> = [mine, theirs, unowned].into_iter().collect();
+    release_asks_off_path_by(&hub, &mut requested, Some(1), &path);
+    assert!(
+        requested.is_empty(),
+        "every hash off the path leaves this session"
+    );
+    assert_eq!(hub.block_ask_owner(&mine), None);
+    assert!(!hub.already_have_or_asked_block(&mine));
+    assert!(!hub.already_have_or_asked_block(&unowned));
+    assert_eq!(
+        hub.block_ask_owner(&theirs),
+        Some(2),
+        "session 2 keeps its ask"
+    );
+
+    let mut requested: HashSet<BlockHash> = [theirs].into_iter().collect();
+    release_asks_off_path_by(&hub, &mut requested, None, &path);
+    assert_eq!(
+        hub.block_ask_owner(&theirs),
+        Some(2),
+        "no session is not every session"
+    );
+    let _ = std::fs::remove_dir_all(dir.path());
+}
+
 #[test]
 fn operator_block_fetch_queue_is_bounded() {
     let peers = rbitcoin_net::peers::PeerHub::new();

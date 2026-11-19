@@ -984,17 +984,16 @@ impl ChainHub {
         self.asked_blocks.write().unwrap().remove(hash);
     }
 
-    /// Release the ask for `hash` that `session` gives up, unless another
-    /// session has since taken it over. Without a session there is no owner
-    /// to check, so this is [`Self::forget_asked_block`].
+    /// Release the ask for `hash` that `session` gives up. The entry goes
+    /// only when `session` owns it or no session does, so an ask another
+    /// session has taken over (`getblockfrompeer`) stays.
     pub fn forget_asked_block_by(&self, hash: &BlockHash, session: Option<u64>) {
         let mut g = self.asked_blocks.write().unwrap();
-        if let (Some(id), Some(Some(owner))) = (session, g.get(hash)) {
-            if *owner != id {
-                return;
-            }
+        if g.get(hash)
+            .is_some_and(|owner| owner.is_none() || *owner == session)
+        {
+            g.remove(hash);
         }
-        g.remove(hash);
     }
 
     pub fn already_have_or_asked_block(&self, hash: &BlockHash) -> bool {
