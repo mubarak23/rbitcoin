@@ -331,7 +331,7 @@ and a release store of the flag do not exclude each other, and a `SeqCst`
 access is not that fence. The flag clears with `SeqCst` after the disk length
 and the clean mark, which stay release stores. The flush does not bump the
 counter, so a get during the flush does not retry because of the flush. Readers stay up
-during IBD. Slot-table growth keeps the previous buffer until the table is dropped. `strong_tx` is one anonymous reservation of the 256 MiB cap: a grow commits the used prefix and does not keep a second image. A
+during IBD. Slot-table growth keeps the previous buffer until the table is dropped. `strong_tx` is one anonymous address reservation of its own (1 GiB production, 16 MiB on the test layout): a grow commits the used prefix and does not keep a second image. A
 get retries when the length it sampled does not fit the buffer it loaded. A
 bulk bit scan rechecks the counter once at the end. A table past the RAM cap
 is fd write-through. Its stores take the same sequence counter with no

@@ -3,8 +3,9 @@
 //! Drives `run_p2p` against one local listener. Routable addresses are required
 //! in the address book, so the body runs in its own process, and in a network
 //! namespace when the machine allows one. That listener binds `0.0.0.0` and
-//! the book lists each `45.x.0.1` on its port. One store reserves a 256 MiB
-//! map; a store per address does not fit the suite runner's 6 GiB hard cap.
+//! the book lists each `45.x.0.1` on its port. The listener shares one Tiny
+//! store: a Mainnet store reserves 1 GiB of address space for its strong-bit
+//! map, so a store per address does not fit the suite runner's 6 GiB cap.
 
 use bitcoin::Block;
 use rbitcoin_consensus::{ChainParams, Milestone};
@@ -600,9 +601,9 @@ fn spawn_journey(netns: bool) -> Output {
             .arg(&exe)
             .env("RBITCOIN_REFILL_NS", "1")
     } else {
-        // Own process: the suite shares one address space, and a listener
-        // store reserves a 256 MiB strong-bit map. GitHub's test runner hard-caps
-        // that space at 6 GiB.
+        // Own process: the suite shares one address space, and every store
+        // reserves a strong-bit map from it (16 MiB on Tiny, 1 GiB at
+        // Mainnet). GitHub's test runner hard-caps that space at 6 GiB.
         cmd = Command::new(&exe);
         cmd.env("RBITCOIN_REFILL_CHILD", "1")
     };

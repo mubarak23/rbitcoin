@@ -1,8 +1,8 @@
 //! Growable dense array of little-endian `u64` values, 0-based.
 //!
 //! `confirmed` and `header_txs_*` load into RAM up to [`class_c_inram_max_bytes`];
-//! `strong_tx` is one anonymous reservation of that cap and commits the used
-//! prefix. Stores update live slots. `flush` writes those
+//! `strong_tx` is one anonymous reservation of [`STRONG_BIT_RESERVE_BYTES`] and
+//! commits the used prefix. Stores update live slots. `flush` writes those
 //! slots in [`FLUSH_SCRATCH`] chunks and clears the unstored mark only after the
 //! persist succeeds. A clean table returns before new stores are excluded. Over
 //! the cap, tables stay fd write-through: an append pwrites the new slots
@@ -166,6 +166,13 @@ pub enum FlushStep {
 
 /// Default max body size for L2 InRam (256 MiB). Over → pure FdOnly L0.
 pub const DEFAULT_CLASS_C_INRAM_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Address-space reservation for the strong-bit image. One bit per create, so
+/// this reaches 2^33 creates.
+pub const STRONG_BIT_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Reservation on the test layout ([`crate::hashhead::HeadScale::Tiny`])
+pub const STRONG_BIT_RESERVE_BYTES_TINY: u64 = 16 * 1024 * 1024;
 
 thread_local! {
     static TEST_CLASS_C_INRAM_MAX: Cell<Option<u64>> = const { Cell::new(None) };
@@ -688,10 +695,15 @@ impl ArrayTable {
     }
 
     /// In-RAM bit image. `bytes` is the body length and is not rounded to a word.
-    /// The mapping is the 256 MiB cap. A grow commits the used prefix only.
-    pub(crate) fn bit_image(file: TableFile, bytes: u64) -> Result<Self, StoreError> {
+    pub(crate) fn bit_image(
+        file: TableFile,
+        bytes: u64,
+        reserve_bytes: u64,
+    ) -> Result<Self, StoreError> {
         let mut table = Self::new(file, None, bytes, true);
-        table.slots = RamSlots::reserve(DEFAULT_CLASS_C_INRAM_MAX_BYTES as usize)?;
+        let reserve = usize::try_from(reserve_bytes)
+            .map_err(|_| StoreError::Corrupt("strong bit reservation exceeds the address space"))?;
+        table.slots = RamSlots::reserve(reserve)?;
         Ok(table)
     }
 

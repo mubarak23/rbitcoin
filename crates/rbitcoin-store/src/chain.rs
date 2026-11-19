@@ -1,8 +1,12 @@
 //! Class C tip/confirmation tables and Class A header→tx ranges.
 
-use crate::array_table::{copy_bit_bytes, seq_odd, seq_read, ArrayTable, ClassCWrite, FlushStep};
+use crate::array_table::{
+    copy_bit_bytes, seq_odd, seq_read, ArrayTable, ClassCWrite, FlushStep,
+    STRONG_BIT_RESERVE_BYTES, STRONG_BIT_RESERVE_BYTES_TINY,
+};
 use crate::error::StoreError;
 use crate::file::{TableFile, FILE_HEADER_LEN};
+use crate::hashhead::HeadScale;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use rbitcoin_primitives::{Fk, Height, TableKind};
 use std::path::Path;
@@ -145,6 +149,14 @@ impl ConfirmedTable {
 /// Bytes [`StrongTxTable::open`] reads per chunk.
 pub const STRONG_OPEN_CHUNK: usize = 16 << 20;
 
+/// Address-space reservation the strong-bit image takes at `scale`.
+pub fn strong_bit_reserve_bytes(scale: HeadScale) -> u64 {
+    match scale {
+        HeadScale::Tiny => STRONG_BIT_RESERVE_BYTES_TINY,
+        HeadScale::Mainnet => STRONG_BIT_RESERVE_BYTES,
+    }
+}
+
 /// Per-tx strong bit (schema v3): bit `(tx_fk - 1)` set ⇒ strong on best chain.
 /// ~64× smaller than a `u64` per tx; the header fk comes from the confirmed range.
 /// Always in RAM, ignoring [`crate::array_table::class_c_inram_max_bytes`].
@@ -158,22 +170,38 @@ pub struct StrongTxTable {
 
 impl StrongTxTable {
     pub fn create(dir: &Path) -> Result<Self, StoreError> {
+        Self::create_with_scale(dir, HeadScale::Mainnet)
+    }
+
+    pub fn create_tiny(dir: &Path) -> Result<Self, StoreError> {
+        Self::create_with_scale(dir, HeadScale::Tiny)
+    }
+
+    pub fn create_with_scale(dir: &Path, scale: HeadScale) -> Result<Self, StoreError> {
         let file = TableFile::create(dir.join("strong_tx.body"), TableKind::StrongTx)?;
         Ok(Self {
-            table: ArrayTable::bit_image(file, 0)?,
+            table: ArrayTable::bit_image(file, 0, strong_bit_reserve_bytes(scale))?,
             n_bits: AtomicU64::new(0),
         })
     }
 
     pub fn open(dir: &Path) -> Result<Self, StoreError> {
-        Self::open_chunked(dir, STRONG_OPEN_CHUNK)
+        Self::open_with_scale(dir, HeadScale::Mainnet)
+    }
+
+    pub fn open_tiny(dir: &Path) -> Result<Self, StoreError> {
+        Self::open_with_scale(dir, HeadScale::Tiny)
+    }
+
+    pub fn open_with_scale(dir: &Path, scale: HeadScale) -> Result<Self, StoreError> {
+        Self::open_chunked(dir, STRONG_OPEN_CHUNK, scale)
     }
 
     /// [`Self::open`] reading the body `chunk` bytes at a time (a multiple
     /// of 8). Read straight into the reservation: a whole-body buffer would
     /// double the open peak (~177 MiB at mainnet).
     #[doc(hidden)]
-    pub fn open_chunked(dir: &Path, chunk: usize) -> Result<Self, StoreError> {
+    pub fn open_chunked(dir: &Path, chunk: usize, scale: HeadScale) -> Result<Self, StoreError> {
         if chunk == 0 || !chunk.is_multiple_of(8) {
             return Err(StoreError::Rejected(
                 "strong_tx open chunk is not whole words",
@@ -181,7 +209,7 @@ impl StrongTxTable {
         }
         let bits = TableFile::open(dir.join("strong_tx.body"), TableKind::StrongTx)?;
         let body = bits.logical_len().saturating_sub(FILE_HEADER_LEN as u64);
-        let table = ArrayTable::bit_image(bits, body)?;
+        let table = ArrayTable::bit_image(bits, body, strong_bit_reserve_bytes(scale))?;
         if body > 0 {
             table.slots.grow((body as usize).div_ceil(8))?;
             let words = table.slots.slots(Ordering::Relaxed);
