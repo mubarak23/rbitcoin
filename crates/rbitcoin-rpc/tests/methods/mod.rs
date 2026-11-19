@@ -9743,7 +9743,7 @@ fn getblockfrompeer_refuses_pre_segwit_and_writerless_peers() {
     let (quiet, _rx2) = fetch_peer(&peers, ServiceFlags::NETWORK | ServiceFlags::WITNESS);
     quiet.clear_out_tx();
     let e = dispatch(&ctx, "getblockfrompeer", vec![json!(hash), json!(quiet.id)]).unwrap_err();
-    assert_eq!(rpc_message(&e), "Node not fully connected");
+    assert_eq!(rpc_message(&e), "Peer not fully connected");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

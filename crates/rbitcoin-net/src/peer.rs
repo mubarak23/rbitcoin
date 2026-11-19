@@ -1849,6 +1849,7 @@ pub async fn on_heartbeat(
         s.request_disconnect();
     }
     let now = s.clock_now();
+    release_moved_block_asks(hub, follow, session);
     s.sync_block_download(now, |h| follow.block_in_flight(h));
     // Blocks in flight, or a frame already read and waiting to decode,
     // suspend the ping timeout. A due ping still sends. The next TCP read
@@ -2352,6 +2353,7 @@ pub async fn peer_session_with(
     let mut owned_follow = SessionFollow {
         hub: hub.clone(),
         state: PeerFollowState::new(),
+        session_id: meta.session.as_ref().map(|s| s.id),
     };
     let follow = &mut owned_follow.state;
     if let Some(s) = meta.session.as_ref() {
@@ -3151,7 +3153,7 @@ pub fn maybe_expire_block_requests(
     }
     for h in stale {
         requested.remove(&h);
-        hub.forget_asked_block(&h);
+        hub.forget_asked_block_by(&h, session.map(|s| s.id));
         if let Some(s) = session {
             s.release_cmpct_taken(h);
         }
@@ -3199,7 +3201,11 @@ pub fn maybe_expire_pending_cmpct(
 /// session requested: the normal receive path checks and accepts it, and the
 /// stall timeout applies. A body we already have, or one already in flight
 /// from this session, is not asked again. An ask another session holds is
-/// moved here, as Core's `FetchBlock` drops prior requests.
+/// moved here, as Core's `FetchBlock` calls `RemoveBlockRequest(hash,
+/// std::nullopt)` first: the hub records this session as the owner and the
+/// previous owner's download window drops the hash at once. That session
+/// drops it from its own blocks in flight through
+/// [`release_moved_block_asks`], and its drop no longer releases the ask.
 #[doc(hidden)]
 pub fn queue_operator_block_fetches(
     hub: &ChainHub,
@@ -3213,7 +3219,11 @@ pub fn queue_operator_block_fetches(
             continue;
         }
         rbitcoin_log::info!("p2p: getblockfrompeer {hash} from peer={}", session.id);
-        hub.forget_asked_block(&hash);
+        if let Some(prev) = hub.move_block_ask(hash, session.id) {
+            if let Some(p) = session.peer_hub().and_then(|ph| ph.get(prev)) {
+                p.drop_block_request(&hash);
+            }
+        }
         queue_block_getdata(
             hub,
             out,
@@ -3250,7 +3260,7 @@ pub fn queue_block_getdata(
         .collect();
     for h in want {
         requested_blocks.insert(*h);
-        hub.note_asked_block(*h);
+        hub.note_asked_block_by(*h, session.map(|s| s.id));
     }
     if let Some(s) = session {
         s.note_blocks_requested(want);
@@ -3668,18 +3678,65 @@ pub struct PeerFollowState {
 /// A live session's follow state. Dropping it, including when
 /// `PeerHub::disconnect_id` aborts the session task, releases the body asks
 /// the peer never answered: `asked_blocks` is hub-wide, so a held ask would
-/// keep every other peer from fetching that body.
+/// keep every other peer from fetching that body. An ask another session
+/// has since taken over (`getblockfrompeer`) is that session's to release.
 #[doc(hidden)]
 pub struct SessionFollow {
     pub hub: Arc<ChainHub>,
     pub state: PeerFollowState,
+    /// `LivePeer::id` of the session, `None` without one.
+    pub session_id: Option<u64>,
 }
 
 impl Drop for SessionFollow {
     fn drop(&mut self) {
         for h in self.state.requested_blocks.drain() {
-            self.hub.forget_asked_block(&h);
+            self.hub.forget_asked_block_by(&h, self.session_id);
         }
+    }
+}
+
+/// Core `RemoveBlockRequest(hash, std::nullopt)` as the session that lost
+/// the ask sees it: another session took `hash` over, so it leaves this
+/// session's blocks in flight and download window. A body this session
+/// receives afterwards is unrequested. `true` when `hash` was released.
+#[doc(hidden)]
+pub fn release_moved_block_ask(
+    hub: &ChainHub,
+    follow: &mut PeerFollowState,
+    session: Option<&crate::peers::LivePeer>,
+    hash: BlockHash,
+) -> bool {
+    if !follow.block_in_flight(&hash) || !hub.block_ask_moved_from(&hash, session.map(|s| s.id)) {
+        return false;
+    }
+    follow.requested_blocks.remove(&hash);
+    if follow.pending_cmpct.contains_key(&hash) {
+        drop_pending_cmpct(follow, session, hash);
+    }
+    if let Some(s) = session {
+        s.drop_block_request(&hash);
+    }
+    true
+}
+
+/// [`release_moved_block_ask`] for every block this session has in flight.
+#[doc(hidden)]
+pub fn release_moved_block_asks(
+    hub: &ChainHub,
+    follow: &mut PeerFollowState,
+    session: Option<&crate::peers::LivePeer>,
+) {
+    let id = session.map(|s| s.id);
+    let moved: Vec<BlockHash> = follow
+        .requested_blocks
+        .iter()
+        .chain(follow.pending_cmpct.keys())
+        .copied()
+        .filter(|h| hub.block_ask_moved_from(h, id))
+        .collect();
+    for h in moved {
+        release_moved_block_ask(hub, follow, session, h);
     }
 }
 
@@ -6298,6 +6355,7 @@ pub async fn on_block(
     block: &Block,
 ) -> Result<(), NetError> {
     let hash = block.block_hash();
+    release_moved_block_ask(hub, follow, session, hash);
     let merkle = crate::compact::block_txid_merkle(&block.txdata);
     if merkle.is_none_or(|(root, _)| root != block.header.merkle_root.to_byte_array()) {
         rbitcoin_log::info!("Block mutated: bad-txnmrklroot, hashMerkleRoot mismatch");
@@ -6517,6 +6575,7 @@ pub async fn on_cmpctblock(
 ) -> Result<(), NetError> {
     let hsi = cb.compact_block.clone();
     let hash = hsi.header.block_hash();
+    release_moved_block_ask(hub, follow, session, hash);
     if on_cmpctblock_reject_early(hub, follow, session, &hsi, hash)? {
         return Ok(());
     }

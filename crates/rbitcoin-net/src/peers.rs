@@ -101,7 +101,7 @@ impl FetchBlockError {
         match self {
             FetchBlockError::NoPeer => "Peer does not exist",
             FetchBlockError::PreSegwit => "Pre-SegWit peer",
-            FetchBlockError::NotFullyConnected => "Node not fully connected",
+            FetchBlockError::NotFullyConnected => "Peer not fully connected",
             FetchBlockError::QueueFull => "Too many block requests queued for this peer",
         }
     }
@@ -1614,6 +1614,31 @@ impl LivePeer {
             drop(d);
             self.end_block_download();
         } else if front_left {
+            d.since = Some(since.max(now));
+        }
+    }
+
+    /// Core `RemoveBlockRequest(hash, std::nullopt)` for this peer: another
+    /// session took over the ask for `hash`, so it leaves this download
+    /// window. The oldest block leaving restarts the window at `now`; the
+    /// last one ends it.
+    pub fn drop_block_request(&self, hash: &BlockHash) {
+        let now = self.clock_now();
+        let mut d = self
+            .block_download
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(i) = d.queue.iter().position(|h| h == hash) else {
+            return;
+        };
+        d.queue.remove(i);
+        let Some(since) = d.since else {
+            return;
+        };
+        if d.queue.is_empty() {
+            drop(d);
+            self.end_block_download();
+        } else if i == 0 {
             d.since = Some(since.max(now));
         }
     }
