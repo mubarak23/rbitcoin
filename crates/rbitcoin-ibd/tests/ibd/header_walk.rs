@@ -5175,6 +5175,10 @@ fn a_late_empty_reply_counts_after_a_later_ask_expired() {
         assert_eq!(expire_header_ask(&mut st), Some(peer));
     }
     apply(&mut st, &hub, 0, vec![]);
+    assert!(
+        !st.header_walk.header_misses.contains_key(&0),
+        "the late reply answers that one ask"
+    );
     asked_empty(&mut st, &hub, 1);
     asked_empty(&mut st, &hub, 2);
     assert_eq!(st.header_walk.tip_hash(), Some(gen));
@@ -5194,9 +5198,15 @@ fn empty_replies_at_the_base_leave_it_live() {
     fill_queue(&mut st);
     assert!(send_getheaders(&mut st, &hub).unwrap());
     assert_eq!(st.header_walk.base_hash, Some(gen));
+    let child = mine(gen, 2).block_hash();
+    plant_on_queue(&mut st, child, 1);
     set_min_work(&mut hub, [0xff; 32]);
     apply(&mut st, &hub, 0, vec![]);
     assert!(!st.header_walk.dead_ends.contains(&gen));
+    assert!(
+        !st.hash_height.contains_key(&child),
+        "the rewind at the base still clears the path above it"
+    );
     set_min_work(&mut hub, [0; 32]);
     assert!(send_getheaders(&mut st, &hub).unwrap());
     apply(&mut st, &hub, 0, vec![g1]);

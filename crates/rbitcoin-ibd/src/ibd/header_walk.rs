@@ -2567,12 +2567,12 @@ pub fn refill_misses_checkpoint(st: &IbdWorkState, tail_h: u32, headers: &[Heade
 
 /// Every alive peer answered an ask empty before the work floor. True when the
 /// walk consumed the reply. An empty reply nobody asked for says nothing about
-/// the tip. A peer whose ask expired is still owed an answer.
+/// the tip. A peer whose ask expired is still owed one answer.
 pub fn note_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize, ask: HeaderAsk) -> bool {
     if !st.header_walk.origin || !below_floor(hub, &st.header_walk.tip_work()) {
         return false;
     }
-    if ask != HeaderAsk::Unsolicited || st.header_walk.header_misses.contains_key(&peer) {
+    if ask != HeaderAsk::Unsolicited || st.header_walk.header_misses.remove(&peer).is_some() {
         st.header_walk.emptied.insert(peer);
     }
     let tall: Vec<usize> = st
