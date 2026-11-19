@@ -1878,6 +1878,7 @@ pub async fn on_heartbeat(
         ph.note_heartbeat_lap();
         ph.on_session_heartbeat();
     }
+    queue_operator_block_fetches(hub, out_tx, follow, s)?;
     // A block or compact frame already sits in `decode_q`. Expiring the
     // ask here forgets it before that frame is applied.
     if !decode_queued {
@@ -3190,6 +3191,39 @@ pub fn maybe_expire_pending_cmpct(
         )?;
     }
     Ok(true)
+}
+
+/// `getblockfrompeer` asks queued on `session` since the last heartbeat.
+///
+/// Each goes out through [`queue_block_getdata`], so the body is a block this
+/// session requested: the normal receive path checks and accepts it, and the
+/// stall timeout applies. A body we already have, or one already in flight
+/// from this session, is not asked again. An ask another session holds is
+/// moved here, as Core's `FetchBlock` drops prior requests.
+#[doc(hidden)]
+pub fn queue_operator_block_fetches(
+    hub: &ChainHub,
+    out: &mpsc::UnboundedSender<PeerOut>,
+    follow: &mut PeerFollowState,
+    session: &crate::peers::LivePeer,
+) -> Result<(), NetError> {
+    for hash in session.take_block_fetches() {
+        if hub.already_have(hash) || hub.held_body(&hash).is_some() || follow.block_in_flight(&hash)
+        {
+            continue;
+        }
+        rbitcoin_log::info!("p2p: getblockfrompeer {hash} from peer={}", session.id);
+        hub.forget_asked_block(&hash);
+        queue_block_getdata(
+            hub,
+            out,
+            Some(session),
+            &mut follow.requested_blocks,
+            &[hash],
+            false,
+        )?;
+    }
+    Ok(())
 }
 
 #[doc(hidden)]

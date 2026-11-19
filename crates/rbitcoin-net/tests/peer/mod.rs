@@ -10185,3 +10185,104 @@ async fn addrfetch_learns_the_getaddr_reply_then_disconnects() {
     );
     let _ = std::fs::remove_dir_all(dir.path());
 }
+
+/// `getblockfrompeer`: the heartbeat sends one witness getdata for a queued
+/// hash, a repeat does not stack, and the body then connects on the normal
+/// requested-block path.
+#[tokio::test]
+async fn operator_block_fetch_asks_once_and_the_body_connects() {
+    let (dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("getblockfrompeer");
+    hub.ensure_genesis().unwrap();
+    let block = rbitcoin_consensus::mine_regtest_paying(
+        hub.tip_hash().unwrap(),
+        hub.tip_header().unwrap().time + 60,
+        1,
+        ScriptBuf::from_bytes(vec![0x51]),
+        vec![],
+    );
+    let hash = block.block_hash();
+    let peers = rbitcoin_net::peers::PeerHub::new();
+    let peer = outbound_test_peer(&peers, 18461);
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+    peer.attach_out(out_tx.clone());
+    peer.mark_handshake_complete();
+    let mut follow = PeerFollowState::new();
+
+    peers.fetch_block_from(peer.id, hash).unwrap();
+    heartbeat_once(&hub, &out_tx, &mut follow, &peer).await;
+    let first = sent(&mut out_rx);
+    assert!(asked_witness(&first, hash), "{first:?}");
+    assert!(follow.requested_blocks.contains(&hash));
+    assert!(
+        peer.block_download_owns(&hash),
+        "the ask holds a download slot"
+    );
+
+    peers.fetch_block_from(peer.id, hash).unwrap();
+    heartbeat_once(&hub, &out_tx, &mut follow, &peer).await;
+    assert!(
+        !asked_witness(&sent(&mut out_rx), hash),
+        "already in flight from this peer: no second getdata"
+    );
+
+    on_block(&hub, &out_tx, &mut follow, Some(peer.as_ref()), &block)
+        .await
+        .unwrap();
+    assert_eq!(hub.tip_hash(), Some(hash), "the requested body connects");
+    assert!(!follow.requested_blocks.contains(&hash));
+
+    peers.fetch_block_from(peer.id, hash).unwrap();
+    heartbeat_once(&hub, &out_tx, &mut follow, &peer).await;
+    assert!(
+        !asked_witness(&sent(&mut out_rx), hash),
+        "a body we have is not asked again"
+    );
+    let _ = std::fs::remove_dir_all(dir.path());
+}
+
+/// The asking session leaves before the body: its ask is released, so the
+/// hash is not stuck "asked" for every other session.
+#[tokio::test]
+async fn operator_block_fetch_released_when_the_session_ends() {
+    let (dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("getblockfrompeer-drop");
+    let hub = Arc::new(hub);
+    hub.ensure_genesis().unwrap();
+    let hash = BlockHash::from_byte_array([0x5a; 32]);
+    let peers = rbitcoin_net::peers::PeerHub::new();
+    let peer = outbound_test_peer(&peers, 18462);
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+    peer.attach_out(out_tx.clone());
+    peer.mark_handshake_complete();
+    let mut session = SessionFollow {
+        hub: Arc::clone(&hub),
+        state: PeerFollowState::new(),
+    };
+    peers.fetch_block_from(peer.id, hash).unwrap();
+    heartbeat_once(&hub, &out_tx, &mut session.state, &peer).await;
+    assert!(asked_witness(&sent(&mut out_rx), hash));
+    assert!(hub.already_have_or_asked_block(&hash));
+    drop(session);
+    assert!(
+        !hub.already_have_or_asked_block(&hash),
+        "a dead session must not hold the ask"
+    );
+    let _ = std::fs::remove_dir_all(dir.path());
+}
+
+#[test]
+fn operator_block_fetch_queue_is_bounded() {
+    let peers = rbitcoin_net::peers::PeerHub::new();
+    let peer = outbound_test_peer(&peers, 18463);
+    for i in 0..rbitcoin_net::MAX_BLOCK_FETCHES {
+        assert!(peer.queue_block_fetch(BlockHash::from_byte_array([i as u8; 32])));
+    }
+    assert!(
+        peer.queue_block_fetch(BlockHash::from_byte_array([0; 32])),
+        "a hash already queued is fine"
+    );
+    assert!(!peer.queue_block_fetch(BlockHash::from_byte_array([0xff; 32])));
+    assert_eq!(
+        peer.take_block_fetches().len(),
+        rbitcoin_net::MAX_BLOCK_FETCHES
+    );
+}
