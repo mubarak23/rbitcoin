@@ -3175,6 +3175,7 @@ mod accept_mutant_pins {
             weight: tx.weight().to_wu(),
             sigop_cost: 0,
             slot: 0,
+            seq: 0,
             parents: parents.iter().copied().collect(),
             children: children.iter().copied().collect(),
         }
