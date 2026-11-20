@@ -457,7 +457,7 @@ async fn restore(
         }
     }
     info!(
-        "control {addr}: reconnected, {} onion service(s) restored",
+        "tor control {addr}: reconnected, {} onion service(s) restored",
         onions.len()
     );
     Some(ctl)
