@@ -677,6 +677,7 @@ fn already_committed_batch(
         archive_plan: None,
         index_seal: rbitcoin_query::confirm_run::index::IndexSeal::default(),
         trust_script_warns: Vec::new(),
+        holds: Vec::new(),
     }
 }
 

@@ -574,6 +574,7 @@ fn load_from_plan_inner(
             stats: query.confirm_stats_arc(),
             trust_peer: super::confirm_waive(query),
             trust_warns: Vec::new(),
+            holds: Vec::new(),
         },
         work_ns,
     })

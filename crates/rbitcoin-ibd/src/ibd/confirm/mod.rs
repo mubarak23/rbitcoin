@@ -3030,7 +3030,11 @@ pub fn spawn_confirm_engine(
                 }
 
                 match mat_res {
-                    Ok(outcome) => {
+                    Ok(mut outcome) => {
+                        outcome.batch.holds = wire_batch
+                            .iter()
+                            .map(|(_, _, w)| Arc::clone(&w.heap))
+                            .collect();
                         let prepared_n = outcome.batch.len();
                         let wire = outcome.batch.approx_wire_bytes();
                         let parents = outcome.batch.parent_count();

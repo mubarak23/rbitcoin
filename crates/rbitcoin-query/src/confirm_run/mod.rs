@@ -192,6 +192,10 @@ pub struct LoadedBatch {
     /// Lookup and load warns. [`ScriptOkBatch::trust_script_warns`] carries
     /// them to the write.
     pub trust_warns: Vec<(u32, rbitcoin_consensus::ConsensusError)>,
+    /// The bodies' decoded-heap charges ([`crate::ResolvedWire::heap`]),
+    /// held until the write drops the batch so the script and write queues
+    /// are metered.
+    pub holds: Vec<Arc<crate::process_mem_stats::HeapCharge>>,
 }
 
 /// Script-verified batch ready for ordered commit (Class A + structural + C).
@@ -206,6 +210,8 @@ pub struct ScriptOkBatch {
     pub index_seal: index::IndexSeal,
     /// Warns held until this batch connects. Logged only after the write succeeds.
     pub trust_script_warns: Vec<(u32, rbitcoin_consensus::ConsensusError)>,
+    /// [`LoadedBatch::holds`], given back when the write drops the batch.
+    pub holds: Vec<Arc<crate::process_mem_stats::HeapCharge>>,
 }
 
 /// One item on the confirm-write channel.
@@ -647,6 +653,7 @@ impl ScriptOkBatch {
         }
         self.prepared.append(&mut other.prepared);
         self.wire_blocks.append(&mut other.wire_blocks);
+        self.holds.append(&mut other.holds);
         self.batch_parents.extend_from(other.batch_parents);
         self.index_seal
             .filters

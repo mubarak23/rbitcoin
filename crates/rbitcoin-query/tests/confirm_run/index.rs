@@ -608,6 +608,7 @@ fn two_block_index_batch(
         stats: Arc::new(rbitcoin_query::ConfirmStats::default()),
         trust_peer: false,
         trust_warns: Vec::new(),
+        holds: Vec::new(),
     }
 }
 

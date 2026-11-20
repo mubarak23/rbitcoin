@@ -94,7 +94,21 @@ fn script_ok_append_contiguous_and_gap() {
             archive_plan: None,
             index_seal: rbitcoin_query::confirm_run::index::IndexSeal::default(),
             trust_script_warns: Vec::new(),
+            holds: Vec::new(),
         }
+    }
+    // A merge keeps the merged batch's decoded charges until the write drops it.
+    {
+        use rbitcoin_query::process_mem_stats::{HeapCharge, HeapGauge};
+        static GAUGE: HeapGauge = HeapGauge::new();
+        let mut x = batch_one(20);
+        x.holds.push(Arc::new(HeapCharge::new(&GAUGE, 7)));
+        let mut y = batch_one(21);
+        y.holds.push(Arc::new(HeapCharge::new(&GAUGE, 9)));
+        assert!(x.append_contiguous(y).is_ok());
+        assert_eq!(GAUGE.load(), (2, 16));
+        drop(x);
+        assert_eq!(GAUGE.load(), (0, 0));
     }
     let mut a = batch_one(10);
     let b = batch_one(11);
@@ -117,6 +131,7 @@ fn script_ok_append_contiguous_and_gap() {
             archive_plan: None,
             index_seal: rbitcoin_query::confirm_run::index::IndexSeal::default(),
             trust_script_warns: Vec::new(),
+            holds: Vec::new(),
         })
         .is_ok());
     assert_eq!(a.len(), 3);
@@ -128,6 +143,7 @@ fn script_ok_append_contiguous_and_gap() {
         archive_plan: None,
         index_seal: rbitcoin_query::confirm_run::index::IndexSeal::default(),
         trust_script_warns: Vec::new(),
+        holds: Vec::new(),
     };
     assert!(empty.append_contiguous(batch_one(50)).is_ok());
     assert_eq!(empty.len(), 1);
@@ -210,6 +226,7 @@ fn three_stage_write_filter_and_scripts_surface() {
         stats: std::sync::Arc::new(rbitcoin_query::ConfirmStats::default()),
         trust_peer: false,
         trust_warns: Vec::new(),
+        holds: Vec::new(),
     };
     assert!(batch.is_empty());
     assert_eq!(batch.approx_wire_bytes(), 0);
@@ -225,6 +242,7 @@ fn three_stage_write_filter_and_scripts_surface() {
         stats: std::sync::Arc::new(rbitcoin_query::ConfirmStats::default()),
         trust_peer: false,
         trust_warns: Vec::new(),
+        holds: Vec::new(),
     };
     assert!(metered.approx_wire_bytes() > 0);
     let mut txid = [0u8; 32];
@@ -252,6 +270,7 @@ fn three_stage_write_filter_and_scripts_surface() {
         archive_plan: None,
         index_seal: rbitcoin_query::confirm_run::index::IndexSeal::default(),
         trust_script_warns: Vec::new(),
+        holds: Vec::new(),
     };
     assert_eq!(script_ok.parent_count(), 1);
     let cur = std::thread::current();
@@ -305,7 +324,30 @@ fn empty_loaded_batch() -> rbitcoin_query::confirm_run::LoadedBatch {
         stats: std::sync::Arc::new(rbitcoin_query::ConfirmStats::default()),
         trust_peer: false,
         trust_warns: Vec::new(),
+        holds: Vec::new(),
     }
+}
+
+/// A batch carries its bodies' decoded charges from load through the
+/// script stage, so the script and write queues are metered; they are
+/// given back when the write drops the batch.
+#[test]
+fn a_batch_holds_its_decoded_charges_until_the_write_drops_it() {
+    use rbitcoin_query::process_mem_stats::{HeapCharge, HeapGauge};
+    static GAUGE: HeapGauge = HeapGauge::new();
+    let mut loaded = empty_loaded_batch();
+    loaded.holds = vec![std::sync::Arc::new(HeapCharge::new(&GAUGE, 500))];
+    let out = rbitcoin_query::confirm_run::scripts::outcome_from(
+        loaded,
+        0,
+        0,
+        rbitcoin_query::confirm_run::index::IndexSeal::default(),
+        0,
+        Vec::new(),
+    );
+    assert_eq!(GAUGE.load(), (1, 500));
+    drop(out);
+    assert_eq!(GAUGE.load(), (0, 0));
 }
 
 /// Workers are all inside detached jobs. The publisher must not run the wave.
@@ -513,6 +555,7 @@ fn loaded_at(
         stats: std::sync::Arc::new(rbitcoin_query::ConfirmStats::default()),
         trust_peer: false,
         trust_warns: Vec::new(),
+        holds: Vec::new(),
     }
 }
 
@@ -717,6 +760,7 @@ fn expected_bits_extending_height0_and_no_retarget() {
         stats: std::sync::Arc::new(rbitcoin_query::ConfirmStats::default()),
         trust_peer: false,
         trust_warns: Vec::new(),
+        holds: Vec::new(),
     };
     let ok = confirm_scripts_phase(loaded).unwrap();
     assert!(ok.batch.is_empty());
@@ -913,6 +957,7 @@ fn script_wave_skips_preverified_txids() {
         stats: std::sync::Arc::new(rbitcoin_query::ConfirmStats::default()),
         trust_peer: false,
         trust_warns: Vec::new(),
+        holds: Vec::new(),
     };
     confirm_scripts_phase(batch).expect("preverified skip avoids bad script fail");
 }

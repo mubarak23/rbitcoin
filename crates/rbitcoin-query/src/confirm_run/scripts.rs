@@ -76,6 +76,7 @@ pub fn outcome_from(
             archive_plan: batch.archive_plan,
             index_seal: seal,
             trust_script_warns,
+            holds: batch.holds,
         },
         work_ns,
         index_done_ns,
