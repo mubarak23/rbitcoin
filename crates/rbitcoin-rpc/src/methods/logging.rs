@@ -20,7 +20,9 @@ pub fn logging(params: &RpcParams) -> Result<Value, Value> {
     Ok(Value::Object(obj))
 }
 
-/// `all` / `1` is every category, `none` / `0` is none, as in Core.
+/// `""`, `1`, and `all` are every category, as in Core `GetLogCategory`.
+/// Core has no `none` / `0` selector here (`-debug=none` is a startup flag),
+/// so those are unknown names.
 fn categories(v: Option<&Value>) -> Result<Vec<Category>, Value> {
     let items = match v {
         None | Some(Value::Null) => return Ok(Vec::new()),
@@ -31,8 +33,7 @@ fn categories(v: Option<&Value>) -> Result<Vec<Category>, Value> {
     for item in items {
         let name = item.as_str().ok_or_else(|| type_error(item, "string"))?;
         match name {
-            "all" | "1" => out.extend(Category::ALL),
-            "none" | "0" => {}
+            "" | "1" | "all" => out.extend(Category::ALL),
             _ => out.push(Category::parse(name).ok_or_else(|| {
                 rpc_error(
                     ERR_INVALID_PARAMETER,

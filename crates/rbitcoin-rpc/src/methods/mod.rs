@@ -1200,8 +1200,8 @@ pub const NAMED_HELP: &[(&str, &str)] = &[
         "logging ( [\"include_category\",...] [\"exclude_category\",...] )\n\
          With no arguments, returns each debug category and whether it is on. \
          include turns categories on, then exclude turns them off; a name in \
-         both ends up off. \"all\" or \"1\" is every category, \"none\" or \"0\" \
-         none. An unknown name is an error and changes nothing. A category \
+         both ends up off. \"all\", \"1\", or \"\" is every category. \
+         An unknown name is an error and changes nothing. A category \
          gates DEBUG lines; TRACE lines also need --log-level trace. INFO and \
          above are not gated. Process-local: a restart starts from --log-level \
          (debug or trace: all on; otherwise all off).\n\

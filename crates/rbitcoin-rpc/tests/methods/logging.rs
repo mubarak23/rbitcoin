@@ -53,6 +53,11 @@ fn logging_all_then_exclude_all_is_visible_in_a_later_call() {
     let map = dispatch(&ctx, "logging", vec![json!([]), json!(["1"])]).unwrap();
     assert!(on_names(&map).is_empty(), "{map}");
     assert_eq!(dispatch(&ctx, "logging", vec![]).unwrap(), map);
+    // An empty name is every category, as in Core GetLogCategory.
+    let map = dispatch(&ctx, "logging", vec![json!([""])]).unwrap();
+    assert_eq!(on_names(&map), all_names());
+    let map = dispatch(&ctx, "logging", vec![json!([]), json!([""])]).unwrap();
+    assert!(on_names(&map).is_empty(), "{map}");
     // The RPC still answers with every category off.
     assert!(dispatch(&ctx, "getrpcinfo", vec![]).is_ok());
 }
@@ -75,11 +80,6 @@ fn logging_include_exclude_by_name_and_named_params() {
     );
     assert_eq!(
         dispatch(&ctx, "logging", vec![Value::Null, Value::Null]).unwrap(),
-        before
-    );
-    // `none` / `0` select nothing.
-    assert_eq!(
-        dispatch(&ctx, "logging", vec![json!(["none"]), json!(["0"])]).unwrap(),
         before
     );
     let named = RpcParams::named(
@@ -105,6 +105,18 @@ fn logging_unknown_category_is_rejected_and_changes_nothing() {
     assert_eq!(err["message"], json!("unknown logging category bogus"));
     let err = dispatch(&ctx, "logging", vec![json!(["Mempool"])]).unwrap_err();
     assert_eq!(err["message"], json!("unknown logging category Mempool"));
+    // Core GetLogCategory has no `none` / `0` selector; `-debug=none` is a
+    // startup flag only.
+    for name in ["none", "0"] {
+        let err = dispatch(&ctx, "logging", vec![json!([name])]).unwrap_err();
+        assert_eq!(err["code"], json!(ERR_INVALID_PARAMETER));
+        assert_eq!(
+            err["message"],
+            json!(format!("unknown logging category {name}"))
+        );
+        let err = dispatch(&ctx, "logging", vec![json!([]), json!([name])]).unwrap_err();
+        assert_eq!(err["code"], json!(ERR_INVALID_PARAMETER));
+    }
     assert_eq!(dispatch(&ctx, "logging", vec![]).unwrap(), before);
     rbitcoin_log::init(Level::Info);
 }
