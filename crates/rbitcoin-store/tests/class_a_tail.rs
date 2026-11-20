@@ -862,3 +862,78 @@ fn torn_page0_tail_image_keeps_the_slot_length() {
     assert_eq!(s.txs.txids.get(Fk(1)).unwrap(), txid);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Page 0 already holds the slot image, and that image's length is longer
+/// than the slot. That is the first restore write without the length write.
+/// Open must keep the slot length. The length is not a whole extra txid, so
+/// count repair does not put it back.
+#[test]
+fn torn_page0_image_keeps_the_slot_length_without_a_second_write() {
+    let dir = tmp();
+    let txid = [0x44u8; 32];
+    {
+        let s = Store::create_tiny(&dir).unwrap();
+        s.put_tx_full_batch_indexed(&[coinbase(txid)], false)
+            .unwrap();
+        s.txs.sync_class_a_named(1).unwrap();
+    }
+    let body = dir.join("txid.body");
+    let published = logical_of(&body);
+    assert!(published > 16 && published < 4096, "published {published}");
+    let n = published as usize;
+    let mut image = vec![0u8; n];
+    read_at(&body, 0, &mut image);
+    let torn = published + 16;
+    image[8..16].copy_from_slice(&torn.to_le_bytes());
+    {
+        let mut file = std::fs::OpenOptions::new().write(true).open(&body).unwrap();
+        file.write_all(&image).unwrap();
+        file.set_len(torn).unwrap();
+        file.sync_all().unwrap();
+    }
+    plant_tail(
+        &dir.join("tear_guard/tail.0"),
+        4,
+        1,
+        &[(TXID_STEM, published, 0, &image)],
+    );
+    std::fs::write(dir.join("tear_guard/first"), vec![0u8; FIRST_BYTES]).unwrap();
+    let s = Store::open_tiny(&dir).unwrap();
+    assert_eq!(s.txs.txids.logical_len(), published);
+    assert_eq!(s.txs.txids.get(Fk(1)).unwrap(), txid);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Bytes past the slot image are a later append. Open must not write the
+/// shorter slot length over that page.
+#[test]
+fn page0_bytes_past_the_slot_image_stay() {
+    let dir = tmp();
+    let first = [0x44u8; 32];
+    let second = [0x55u8; 32];
+    {
+        let s = Store::create_tiny(&dir).unwrap();
+        s.put_tx_full_batch_indexed(&[coinbase(first), coinbase(second)], false)
+            .unwrap();
+        s.txs.sync_class_a_named(2).unwrap();
+    }
+    let body = dir.join("txid.body");
+    let published = logical_of(&body);
+    let first_end = published - 32;
+    assert!(first_end > 16 && first_end < published);
+    let mut image = vec![0u8; first_end as usize];
+    read_at(&body, 0, &mut image);
+    image[8..16].copy_from_slice(&published.to_le_bytes());
+    plant_tail(
+        &dir.join("tear_guard/tail.0"),
+        4,
+        2,
+        &[(TXID_STEM, first_end, 0, &image)],
+    );
+    std::fs::write(dir.join("tear_guard/first"), vec![0u8; FIRST_BYTES]).unwrap();
+    let s = Store::open_tiny(&dir).unwrap();
+    assert_eq!(s.txs.txids.logical_len(), published);
+    assert_eq!(s.txs.txids.get(Fk(1)).unwrap(), first);
+    assert_eq!(s.txs.txids.get(Fk(2)).unwrap(), second);
+    let _ = std::fs::remove_dir_all(&dir);
+}

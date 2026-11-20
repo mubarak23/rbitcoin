@@ -499,10 +499,7 @@ fn restore_stem(
     let mut page0 = vec![0u8; page_n];
     pread_exact(&file, &path, 0, &mut page0)?;
     let page0_zero = all_zero(&page0);
-    let mut page0_restored = false;
-    if page0_zero {
-        page0_restored = restore_page0(&file, &path, stem, published, first_raw, best)?;
-    }
+    let page0_restored = restore_page0(&file, &path, stem, published, first_raw, best, &page0)?;
     if page0_restored {
         // The live header was zeros, so `published` was 0 when no slot parsed.
         // The length just written is the one the tail check has to use.
@@ -542,24 +539,42 @@ fn restore_page0(
     published: u64,
     first_raw: &[u8],
     best: Option<&TailSlot>,
+    page0: &[u8],
 ) -> Result<bool, StoreError> {
-    if let Some(commit) = parse_commit(first_raw, stem) {
-        let mut image = commit.image;
-        let len = recorded_len(best, stem, published, le_u64(&image[8..16]));
-        image[8..16].copy_from_slice(&len.to_le_bytes());
-        pwrite_exact(file, path, 0, &image)?;
-        return Ok(true);
-    }
-    if let Some(slot) = best {
-        if slot.tail_off[stem] == 0 && slot.tail_len[stem] > 0 {
-            pwrite_exact(file, path, 0, image_of(slot, stem))?;
-            if slot.published[stem] > 0 {
-                pwrite_exact(file, path, 8, &slot.published[stem].to_le_bytes())?;
-            }
+    if all_zero(page0) {
+        if let Some(commit) = parse_commit(first_raw, stem) {
+            let mut image = commit.image;
+            let len = recorded_len(best, stem, published, le_u64(&image[8..16]));
+            image[8..16].copy_from_slice(&len.to_le_bytes());
+            pwrite_exact(file, path, 0, &image)?;
             return Ok(true);
         }
     }
+    let Some(slot) = best else {
+        return Ok(false);
+    };
+    if slot.tail_off[stem] != 0 || slot.tail_len[stem] == 0 {
+        return Ok(false);
+    }
+    let raw = image_of(slot, stem);
+    let mut image = raw.to_vec();
+    stamp_loaded_len(&mut image, slot.published[stem]);
+    // One write. A page that is still the unstamped image is that write
+    // without the slot length, so the next open would otherwise keep it.
+    if page_holds(page0, &image) {
+        return Ok(false);
+    }
+    if all_zero(page0) || page_holds(page0, raw) {
+        pwrite_exact(file, path, 0, &image)?;
+        return Ok(true);
+    }
     Ok(false)
+}
+
+fn page_holds(page: &[u8], image: &[u8]) -> bool {
+    page.len() >= image.len()
+        && &page[..image.len()] == image
+        && page[image.len()..].iter().all(|byte| *byte == 0)
 }
 
 fn stamp_loaded_len(image: &mut [u8], published: u64) {
