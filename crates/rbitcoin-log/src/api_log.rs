@@ -1,6 +1,6 @@
 //! Optional JSONL API call log (`--api-log PATH`).
 //!
-//! Always emits a TRACE `api:` line. When [`init_api_log`] has been called,
+//! Always emits a TRACE `api:` line in the `api` category. When [`init_api_log`] has been called,
 //! also appends one JSON object per call so the operator can `tail -f` without
 //! turning the main log up.
 
@@ -74,8 +74,14 @@ pub fn api_call(
 ) {
     let params = logged_params(method, params);
     match err {
-        None => trace!("api: {surface} peer={peer} {method} {params} wall_ms={wall_ms} ok"),
-        Some(e) => trace!("api: {surface} peer={peer} {method} {params} wall_ms={wall_ms} err={e}"),
+        None => trace!(
+            Api,
+            "api: {surface} peer={peer} {method} {params} wall_ms={wall_ms} ok"
+        ),
+        Some(e) => trace!(
+            Api,
+            "api: {surface} peer={peer} {method} {params} wall_ms={wall_ms} err={e}"
+        ),
     }
 
     let mut g = API_LOG.lock().unwrap_or_else(|e| e.into_inner());

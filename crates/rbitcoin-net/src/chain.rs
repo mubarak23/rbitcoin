@@ -2518,7 +2518,7 @@ impl ChainHub {
                     let ids: Vec<_> = block.txdata.iter().map(|t| t.compute_txid()).collect();
                     let spent = spent_outpoints(&block.txdata);
                     let n = mp.remove_for_block_spent(&ids, &spent);
-                    rbitcoin_log::debug!("mempool: removed {n} confirmed tx(s) @ {hash}");
+                    rbitcoin_log::debug!(Mempool, "mempool: removed {n} confirmed tx(s) @ {hash}");
                     stripped = Some(hash.to_byte_array());
                 }
             }
@@ -4632,7 +4632,10 @@ impl ChainHub {
             let ids = Self::strip_txids_from_pres(&pres);
             let spent = spent_outpoints(&block.txdata);
             let n = mp.remove_for_block_spent(&ids, &spent);
-            rbitcoin_log::debug!("mempool: removed {n} confirmed tx(s) @ height {height}");
+            rbitcoin_log::debug!(
+                Mempool,
+                "mempool: removed {n} confirmed tx(s) @ height {height}"
+            );
             // Disconnect committed the fork point. Keep committing the
             // connected block, or the drop publishes that ancestor and a
             // template builds on it while the pool is still catching up.
@@ -4772,6 +4775,7 @@ impl ChainHub {
             let n = mp.reorg_reaccept(txs);
             let tip = self.tip_height().unwrap_or(0);
             rbitcoin_log::debug!(
+                Mempool,
                 "mempool: re-accepted {n}/{} tx(s) after reorg to {tip}",
                 txs.len()
             );
@@ -5629,7 +5633,7 @@ pub fn log_tip_accept_sh(
         sh_lag: query.sh_lag_heights(),
         sh,
     });
-    debug!("tip: accept {line}");
+    debug!(Tip, "tip: accept {line}");
 }
 
 use crate::most_work::work_better;

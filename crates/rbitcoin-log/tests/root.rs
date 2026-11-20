@@ -4,8 +4,9 @@ use std::time::UNIX_EPOCH;
 
 use std::sync::{Mutex, OnceLock};
 
-/// Global log level is process-wide; serialize tests that call `init*`.
-fn lock_log_init() -> std::sync::MutexGuard<'static, ()> {
+/// Global log level and categories are process-wide; serialize tests that
+/// call `init*` or change categories (`category.rs` shares this lock).
+pub(crate) fn lock_log_init() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()

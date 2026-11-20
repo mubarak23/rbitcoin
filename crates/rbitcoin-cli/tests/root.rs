@@ -154,6 +154,18 @@ fn param_tokens_json_or_string() {
 }
 
 #[test]
+fn logging_include_and_exclude_are_json_arrays() {
+    assert_eq!(
+        param_value("logging", 0, r#"["mempool","p2p"]"#).unwrap(),
+        serde_json::json!(["mempool", "p2p"])
+    );
+    assert_eq!(
+        param_value("logging", 1, r#"["all"]"#).unwrap(),
+        serde_json::json!(["all"])
+    );
+}
+
+#[test]
 fn equals_form_datadir_is_accepted() {
     let dir = tmp_datadir();
     std::fs::write(dir.join("rpc.token"), "s3cret").unwrap();

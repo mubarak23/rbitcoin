@@ -361,6 +361,18 @@ Operational logs go to **stderr** with UTC timestamps:
 
 Default: **info**. CLI wins over env.
 
+DEBUG and TRACE lines belong to a category (`mempool`, `p2p`, `ibd`, …). At
+`debug` or `trace` every category starts on; below that every one starts
+off. Turn one on for a while without a restart, then put it back:
+
+```bash
+rbitcoin-cli logging '["mempool"]'
+rbitcoin-cli logging '[]' '["mempool"]'
+```
+
+A TRACE line also needs `--log-level trace`. The change does not survive a
+restart. Names and rules: [`docs/rpc.md`](../rpc.md) (`logging`).
+
 ### Tip-follow (every block)
 
 After IBD, each accepted tip extension logs one **info** line:

@@ -86,6 +86,8 @@ const CONVERT_PARAMS: &[(&str, usize, &str, ParamFormat)] = &[
         "apply_unbroadcast_set",
         ParamFormat::Json,
     ),
+    ("logging", 0, "include", ParamFormat::Json),
+    ("logging", 1, "exclude", ParamFormat::Json),
     ("mockscheduler", 0, "delta_seconds", ParamFormat::Json),
     ("prioritisetransaction", 1, "dummy", ParamFormat::Json),
     ("prioritisetransaction", 2, "fee_delta", ParamFormat::Json),

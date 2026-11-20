@@ -1312,9 +1312,9 @@ pub async fn inbound_connect_and_handshake(
         }
         Err(_) => {
             if sess.v2_transport_ready() {
-                rbitcoin_log::debug!("{}", crate::v2::v2_handshake_timeout_log(sess.id));
+                rbitcoin_log::debug!(P2p, "{}", crate::v2::v2_handshake_timeout_log(sess.id));
             } else {
-                rbitcoin_log::debug!("{}", version_handshake_timeout_log(sess.id));
+                rbitcoin_log::debug!(P2p, "{}", version_handshake_timeout_log(sess.id));
             }
             let _ = peers.disconnect_id(sess.id);
             return Err(NetError::Timeout);
@@ -1482,7 +1482,7 @@ pub fn fail_if_handshake_timed_out(policy: &HandshakePolicy<'_>) -> Result<(), N
     } else {
         crate::v2::v2_handshake_timeout_log(s.id)
     };
-    rbitcoin_log::debug!("{}", line);
+    rbitcoin_log::debug!(P2p, "{}", line);
     let _ = peers.disconnect_id(s.id);
     Err(NetError::Timeout)
 }
@@ -1637,7 +1637,11 @@ pub async fn read_peer_version<R: FrameRead>(
             NetworkMessage::Version(v) => {
                 if (v.version as i32) < MIN_PEER_PROTO_VERSION {
                     if let Some(s) = policy.session {
-                        rbitcoin_log::debug!("{}", obsolete_version_log(v.version as i32, s.id));
+                        rbitcoin_log::debug!(
+                            P2p,
+                            "{}",
+                            obsolete_version_log(v.version as i32, s.id)
+                        );
                         if let Some(peers) = policy.peers {
                             let _ = peers.disconnect_id(s.id);
                         }
@@ -1649,7 +1653,7 @@ pub async fn read_peer_version<R: FrameRead>(
             NetworkMessage::Verack => return Err(NetError::Protocol("verack before version")),
             other => {
                 if let Some(s) = policy.session {
-                    rbitcoin_log::debug!("{}", non_version_before_handshake_log(&cmd, s.id));
+                    rbitcoin_log::debug!(P2p, "{}", non_version_before_handshake_log(&cmd, s.id));
                 }
                 let _ = other;
                 fail_if_handshake_timed_out(policy)?;
@@ -1702,13 +1706,13 @@ pub fn apply_pre_verack(
         }
         NetworkMessage::Ping(_) => {
             if let Some(s) = session {
-                rbitcoin_log::debug!("{}", ping_prior_to_verack_log(s.id));
+                rbitcoin_log::debug!(P2p, "{}", ping_prior_to_verack_log(s.id));
             }
             false
         }
         _ => {
             if let Some(s) = session {
-                rbitcoin_log::debug!("{}", unsupported_before_verack_log(cmd, s.id));
+                rbitcoin_log::debug!(P2p, "{}", unsupported_before_verack_log(cmd, s.id));
             }
             false
         }
@@ -1845,7 +1849,7 @@ pub async fn on_heartbeat(
     };
     maybe_queue_feefilter(hub, out_tx, s);
     if addrfetch_timed_out(s) {
-        rbitcoin_log::debug!("addrfetch connection timeout");
+        rbitcoin_log::debug!(P2p, "addrfetch connection timeout");
         s.request_disconnect();
     }
     let now = s.clock_now();
@@ -2555,7 +2559,7 @@ pub async fn peer_session_with(
                             // Core stays connected; counts raw v2 size as `*other*`.
                             if !logged_invalid_v2 {
                                 logged_invalid_v2 = true;
-                                rbitcoin_log::debug!("{}", crate::v2::v2_invalid_message_type_log());
+                                rbitcoin_log::debug!(P2p, "{}", crate::v2::v2_invalid_message_type_log());
                             }
                             if let Some(ref sess) = session {
                                 sess.note_recv_raw(
@@ -2947,7 +2951,7 @@ pub async fn peer_session_with(
         let _ = writer_task.await;
     }
     match &result {
-        Ok(()) => rbitcoin_log::debug!("p2p: session {peer_s} closed"),
+        Ok(()) => rbitcoin_log::debug!(P2p, "p2p: session {peer_s} closed"),
         Err(e) => rbitcoin_log::warn!("p2p: session {peer_s} ended: {e}"),
     }
     result
@@ -4886,7 +4890,7 @@ pub async fn serve_getdata_wtx(
     notfound: &mut Vec<Inventory>,
 ) -> Result<(), NetError> {
     if let Some(s) = session {
-        rbitcoin_log::trace!("{}", received_getdata_wtx_log(wtxid, s.id));
+        rbitcoin_log::trace!(Txrelay, "{}", received_getdata_wtx_log(wtxid, s.id));
     }
     let tx = hub.mempool().and_then(|mp| mp.try_get_tx_by_wtxid(wtxid));
     if serve_mempool_getdata(hub, out_tx, session, tx)? {
@@ -6587,7 +6591,10 @@ pub fn on_cmpctblock_reject_early(
         return Ok(true);
     }
     if follow.cmpct_version != 2 {
-        rbitcoin_log::debug!("p2p: cmpctblock from a peer that never sent sendcmpct version 2");
+        rbitcoin_log::debug!(
+            P2p,
+            "p2p: cmpctblock from a peer that never sent sendcmpct version 2"
+        );
         return Ok(true);
     }
     if session.is_some_and(|s| s.has_failed_cmpct(&hash)) {
@@ -6828,7 +6835,10 @@ pub fn on_cmpct_need_txn(
         }),
     )?;
     ask_other_hb_for_block(session, hash);
-    rbitcoin_log::debug!("cmpct reconstruct {hash} missing={missing_n} awaiting blocktxn");
+    rbitcoin_log::debug!(
+        P2p,
+        "cmpct reconstruct {hash} missing={missing_n} awaiting blocktxn"
+    );
     Ok(())
 }
 
@@ -7120,7 +7130,7 @@ pub async fn on_tx(
     session: Option<&crate::peers::LivePeer>,
     tx: &Transaction,
 ) -> Result<(), NetError> {
-    rbitcoin_log::trace!("{}", received_tx_log());
+    rbitcoin_log::trace!(Txrelay, "{}", received_tx_log());
     if hub.in_ibd() {
         return Ok(());
     }
@@ -7211,7 +7221,7 @@ pub async fn on_tx(
                             }
                         }
                         TxAcceptLog::Park(_missing) => {
-                            rbitcoin_log::debug!("txrelay: park {txid} missingorspent");
+                            rbitcoin_log::debug!(Txrelay, "txrelay: park {txid} missingorspent");
                             fetch_parked_parents(mp, tx, &wtxid, session, &extra_from);
                         }
                         TxAcceptLog::ParentFetch(_missing) => {
@@ -7583,6 +7593,7 @@ fn hb_relay_cmpct(
         wtxids.iter().skip(1).copied(),
     ) {
         rbitcoin_log::debug!(
+            P2p,
             "p2p: no compact relay of mutated block {}: {}",
             block.block_hash(),
             rbitcoin_consensus::block_reject_reason(&e)

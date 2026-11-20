@@ -9542,6 +9542,7 @@ include!("../regtest_chain_ops_journey.rs");
 
 mod chain;
 mod decode;
+mod logging;
 mod mempool;
 mod submit_spent_race;
 

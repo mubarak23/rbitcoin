@@ -58,6 +58,7 @@ pub fn rpc_call_reads_store(method: &str) -> bool {
             | "echo"
             | "echojson"
             | "getrpcinfo"
+            | "logging"
             | "uptime"
             | "stop"
             | "getblockcount"
@@ -224,6 +225,7 @@ pub mod chain;
 #[doc(hidden)]
 pub mod decode;
 mod descriptor;
+mod logging;
 #[doc(hidden)]
 pub mod mempool;
 #[doc(hidden)]
@@ -761,6 +763,7 @@ pub fn dispatch_inner(ctx: &RpcContext, method: &str, params: RpcParams) -> Resu
             params.reject_unknown(&[])?;
             Ok(json!(ctx.uptime_secs()))
         }
+        "logging" => logging::logging(&params),
         "stop" => {
             params.reject_unknown(&["wait"])?;
             let _wait = params.opt_u64(0, "wait")?;
@@ -977,6 +980,7 @@ pub const METHOD_LIST: &[&str] = &[
     "echo",
     "echojson",
     "getrpcinfo",
+    "logging",
     "uptime",
     "stop",
     "getblockchaininfo",
@@ -1190,6 +1194,20 @@ pub const NAMED_HELP: &[(&str, &str)] = &[
         "getorphantxs ( verbosity )\n\
          Shows transactions in the tx orphanage.\n\
          EXPERIMENTAL warning: this call may be changed in future releases.",
+    ),
+    (
+        "logging",
+        "logging ( [\"include_category\",...] [\"exclude_category\",...] )\n\
+         With no arguments, returns each debug category and whether it is on. \
+         include turns categories on, then exclude turns them off; a name in \
+         both ends up off. \"all\" or \"1\" is every category, \"none\" or \"0\" \
+         none. An unknown name is an error and changes nothing. A category \
+         gates DEBUG lines; TRACE lines also need --log-level trace. INFO and \
+         above are not gated. Process-local: a restart starts from --log-level \
+         (debug or trace: all on; otherwise all off).\n\
+         Categories: \"api\" (per-call api: lines, TRACE), \"electrum\", \"i2p\", \
+         \"ibd\", \"mempool\", \"node\", \"p2p\", \"query\", \"store\", \"sv2\", \
+         \"tip\", \"tor\", \"txrelay\".",
     ),
     (
         "help",

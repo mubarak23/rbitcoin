@@ -427,7 +427,7 @@ async fn restore(
     let mut ctl = match TorControl::connect_and_auth(addr, auth.clone(), timeout).await {
         Ok(ctl) => ctl,
         Err(e) => {
-            debug!("tor control {addr}: reconnect failed: {e}");
+            debug!(Tor, "tor control {addr}: reconnect failed: {e}");
             return None;
         }
     };

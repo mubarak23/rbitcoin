@@ -235,13 +235,17 @@ pub fn spawn_isolated_broadcast_loop(
                 IsolatedTake::Send(tx) => tx,
                 IsolatedTake::Gone => {
                     rbitcoin_log::debug!(
+                        Txrelay,
                         "isolated broadcast {txid}: left the mempool before its turn"
                     );
                     mp.note_isolated_lap(IsolatedLap::SkippedUnknown);
                     continue;
                 }
                 IsolatedTake::InBlock => {
-                    rbitcoin_log::debug!("isolated broadcast {txid}: already in a block, not sent");
+                    rbitcoin_log::debug!(
+                        Txrelay,
+                        "isolated broadcast {txid}: already in a block, not sent"
+                    );
                     continue;
                 }
             };

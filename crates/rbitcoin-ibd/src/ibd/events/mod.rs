@@ -407,7 +407,7 @@ pub fn on_empty_headers(st: &mut IbdWorkState, hub: &ChainHub) -> bool {
                     st.max_peer_height,
                 );
             } else {
-                trace!(
+                trace!(Ibd,
                     "ibd: empty headers but lag={lag} behind max_peer_height={} (known≈{known}, tip={tip_h}) — keep header sync",
                     st.max_peer_height,
                 );
@@ -1233,7 +1233,10 @@ fn tally_learned_addr(added: &mut usize) {
 #[cfg_attr(feature = "mutants", mutants::skip)]
 fn log_learned_addrs(from_peer: usize, added: usize, book_len: usize) {
     if added > 0 {
-        rbitcoin_log::debug!("ibd: peer[{from_peer}] taught {added} addr(s); book={book_len}");
+        rbitcoin_log::debug!(
+            Ibd,
+            "ibd: peer[{from_peer}] taught {added} addr(s); book={book_len}"
+        );
     }
 }
 

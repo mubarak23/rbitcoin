@@ -836,7 +836,11 @@ impl LivePeer {
         if self.wants_addrv2() {
             let mut v = Vec::new();
             if let Some(addr) = onion {
-                rbitcoin_log::debug!("{}", crate::peer::advertising_address_log(addr, self.id));
+                rbitcoin_log::debug!(
+                    P2p,
+                    "{}",
+                    crate::peer::advertising_address_log(addr, self.id)
+                );
                 v.push(AddrV2Message {
                     time: t,
                     services,
@@ -845,7 +849,11 @@ impl LivePeer {
                 });
             }
             if let Some(addr) = i2p {
-                rbitcoin_log::debug!("{}", crate::peer::advertising_address_log(addr, self.id));
+                rbitcoin_log::debug!(
+                    P2p,
+                    "{}",
+                    crate::peer::advertising_address_log(addr, self.id)
+                );
                 v.push(AddrV2Message {
                     time: t,
                     services,
@@ -854,7 +862,11 @@ impl LivePeer {
                 });
             }
             if let Some(sock) = sock {
-                rbitcoin_log::debug!("{}", crate::peer::advertising_address_log(sock, self.id));
+                rbitcoin_log::debug!(
+                    P2p,
+                    "{}",
+                    crate::peer::advertising_address_log(sock, self.id)
+                );
                 let net = crate::NetAddr::from_socket(sock);
                 v.push(AddrV2Message {
                     time: t,
@@ -872,7 +884,11 @@ impl LivePeer {
                 Some(s) if matches!(crate::NetAddr::from_socket(s), crate::NetAddr::Ip(_)) => s,
                 _ => return None,
             };
-            rbitcoin_log::debug!("{}", crate::peer::advertising_address_log(sock, self.id));
+            rbitcoin_log::debug!(
+                P2p,
+                "{}",
+                crate::peer::advertising_address_log(sock, self.id)
+            );
             Some(NetworkMessage::Addr(vec![(
                 t,
                 Address::new(&sock, services),
@@ -3283,7 +3299,7 @@ impl PeerHub {
             } else {
                 crate::v2::v2_handshake_timeout_log(p.id)
             };
-            rbitcoin_log::debug!("{}", line);
+            rbitcoin_log::debug!(P2p, "{}", line);
         }
         for p in timed_out {
             let _ = self.disconnect_id(p.id);
@@ -3576,7 +3592,7 @@ impl PeerHub {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, Arc::clone(&peer));
-        rbitcoin_log::debug!("p2p: Added connection peer={id}");
+        rbitcoin_log::debug!(P2p, "p2p: Added connection peer={id}");
         peer
     }
 

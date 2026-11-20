@@ -1543,6 +1543,7 @@ impl TableFile {
         let rc = unsafe { libc::posix_fadvise(fd, 0, 0, advice) };
         if rc != 0 {
             rbitcoin_log::trace!(
+                Store,
                 "store: posix_fadvise failed path={}: {}",
                 self.path.display(),
                 std::io::Error::from_raw_os_error(rc)
@@ -1570,6 +1571,7 @@ impl TableFile {
             };
             if rc != 0 {
                 rbitcoin_log::trace!(
+                    Store,
                     "store: posix_fadvise(DONTNEED) failed path={} off={offset} len={len}: {}",
                     self.path.display(),
                     std::io::Error::from_raw_os_error(rc)
@@ -1626,7 +1628,10 @@ pub fn ensure_nofile_budget_at_least(want_soft: u64) -> (u64, u64) {
                 );
                 return (soft, hard);
             }
-            rbitcoin_log::debug!("store: raised RLIMIT_NOFILE soft {soft}→{target} (hard={hard})");
+            rbitcoin_log::debug!(
+                Store,
+                "store: raised RLIMIT_NOFILE soft {soft}→{target} (hard={hard})"
+            );
             return (target, hard);
         }
         if soft < want_soft {

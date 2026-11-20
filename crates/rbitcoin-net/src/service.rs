@@ -593,6 +593,7 @@ pub fn spawn_inbound_accept(
                             Ok(x) => x,
                             Err(e) => {
                                 rbitcoin_log::debug!(
+                                    P2p,
                                     "p2p: inbound handshake {peer_addr} failed: {e}"
                                 );
                                 return;
@@ -600,7 +601,7 @@ pub fn spawn_inbound_accept(
                         };
                         sess.attach_tcp_shutdown(tcp_shutdown);
                         if !peers.make_room_for_tx_relay_inbound(&sess, max_inbound) {
-                            rbitcoin_log::debug!(
+                            rbitcoin_log::debug!(P2p,
                                 "failed to find a tx-relaying eviction candidate - connection dropped after the handshake, peer={}",
                                 sess.id
                             );
@@ -721,7 +722,7 @@ pub async fn prepare_outbound_session(
     }
     let tip_at_handshake = hub.tip_hash();
     hub.clock.note_connection_attempt();
-    rbitcoin_log::debug!("{}", crate::peers::trying_connection_log(typ, &peer));
+    rbitcoin_log::debug!(P2p, "{}", crate::peers::trying_connection_log(typ, &peer));
     // Until this returns, the redial pass and `addnode` treat `peer` as
     // already dialling. A queued dial was counted when it was queued.
     let _dialing = in_flight.unwrap_or_else(|| peers.dial_in_flight(&peer));

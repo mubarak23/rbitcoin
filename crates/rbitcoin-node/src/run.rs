@@ -7,7 +7,7 @@ use rbitcoin_esplora::{run_esplora, BlockTemplateFn, EsploraConfig, EsploraHandl
 use rbitcoin_ibd::{
     read_platform_rss, tip_perf_json, IbdConfig, Peerless, TipPerfLog, PEERLESS_REDIAL_CAP,
 };
-use rbitcoin_log::{debug, enabled, info, warn, Level};
+use rbitcoin_log::{debug, info, log_enabled, warn, Category, Level};
 use rbitcoin_net::{
     default_port, netgroup_net, sample_reset_serve_perf, socks_dns_seed_dests, AddrMan, AsMap,
     BlockingRegion, ChainHub, Dialer, MempoolHub, NetAddr, OutboundPass, P2PNode, PeerConnType,
@@ -1659,7 +1659,7 @@ pub async fn run_p2p(config: NodeConfig) -> Result<(), NodeError> {
                     .as_ref()
                     .map(|s| (s.fee_checks.take_window().0, s.builds.take_window()));
                 let blks = std::mem::take(&mut window_blocks);
-                if enabled(Level::Debug) {
+                if log_enabled(Level::Debug, Category::Tip) {
                     let live = mempool_blocking(&mempool, MempoolHub::live_count).await?;
                     let follow_live = node.follow_live_count();
                     let acc_avg = mp
@@ -1705,7 +1705,7 @@ pub async fn run_p2p(config: NodeConfig) -> Result<(), NodeError> {
                         sv2_build_avg_us: sv2_build_us.checked_div(sv2_builds).unwrap_or(0),
                         sv2_build_max_us,
                     });
-                    debug!("tip: perf {line}");
+                    debug!(Tip, "tip: perf {line}");
                 }
             }
 
@@ -1723,7 +1723,7 @@ pub async fn run_p2p(config: NodeConfig) -> Result<(), NodeError> {
             if let TipFollowWake::Tip(ev) = &wake {
                 let h = ev.height;
                 if h != last_tip {
-                    debug!(
+                    debug!(Node,
                         "node: tip={h} (+{delta} since start, elapsed {elapsed}s, follow_live={follow_live})"
                     );
                     window_blocks = window_blocks.saturating_add(h.saturating_sub(last_tip) as u64);
@@ -1736,7 +1736,7 @@ pub async fn run_p2p(config: NodeConfig) -> Result<(), NodeError> {
             }
 
             if tip != last_tip {
-                debug!(
+                debug!(Node,
                     "node: tip={tip} (+{delta} since start, elapsed {elapsed}s, follow_live={follow_live})"
                 );
                 window_blocks = window_blocks.saturating_add(tip.saturating_sub(last_tip) as u64);

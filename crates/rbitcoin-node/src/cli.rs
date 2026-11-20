@@ -282,7 +282,7 @@ where
 
     let (soft, hard) = rbitcoin_store::ensure_nofile_budget();
     if soft > 0 {
-        rbitcoin_log::debug!("node: RLIMIT_NOFILE soft={soft} hard={hard}");
+        rbitcoin_log::debug!(Node, "node: RLIMIT_NOFILE soft={soft} hard={hard}");
     }
 
     let _suspend_inhibit = if config.inhibit_suspend {

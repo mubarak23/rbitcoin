@@ -43,6 +43,7 @@ pub fn tweaks_at_height(
         Ok(None) if query.prune_seqsigwit() => return pruned_keep_tweaks(query, height),
         Ok(None) => {
             rbitcoin_log::debug!(
+                Query,
                 "sp_tweaks: naive fallback h={} (hole or index off)",
                 height.0
             );

@@ -13,16 +13,21 @@
 //! `reset_debug_log`.
 //!
 //! [`progress`] keeps live done/total for long stages, readable at any level.
+//!
+//! DEBUG and TRACE lines carry a [`Category`]; see [`category`] for how the
+//! category set and the level combine.
 
 #![forbid(unsafe_code)]
 
 #[doc(hidden)]
 pub mod api_log;
+pub mod category;
 pub mod progress;
 
 #[doc(hidden)]
 pub use api_log::PARAMS_MAX;
 pub use api_log::{api_call, close_api_log, init_api_log};
+pub use category::{category_enabled, category_map, log_enabled, update_categories, Category};
 
 use std::cell::RefCell;
 use std::fmt;
@@ -172,14 +177,17 @@ pub fn take_logs() -> Vec<(Level, String)> {
     CAPTURED.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
-/// Set the maximum log level (inclusive).
+/// Set the maximum log level (inclusive). Every debug category is on at
+/// DEBUG or TRACE and off below that.
 pub fn init(level: Level) {
     MAX_LEVEL.store(level as u8, Ordering::Relaxed);
+    category::set_all(level >= Level::Debug);
 }
 
-/// Disable all logging.
+/// Disable all logging, debug categories included.
 pub fn init_off() {
     MAX_LEVEL.store(0, Ordering::Relaxed);
+    category::set_all(false);
 }
 
 /// Whether `level` would be emitted under the current max.
@@ -358,12 +366,29 @@ impl fmt::Display for EscapedMessage<'_> {
 /// Write one log line with optional style. Bold is applied only when stderr is
 /// an interactive terminal so redirected logs stay clean ASCII.
 pub fn log_at_style(level: Level, style: Style, args: fmt::Arguments<'_>) {
+    capture(level, &args);
+    if enabled(level) {
+        write_line(level, style, args);
+    }
+}
+
+/// Write one line in `cat` if [`log_enabled`] says so. The `debug!` and
+/// `trace!` macros call this.
+pub fn log_cat(level: Level, cat: Category, args: fmt::Arguments<'_>) {
+    capture(level, &args);
+    if log_enabled(level, cat) {
+        write_line(level, Style::Plain, args);
+    }
+}
+
+/// Capture is independent of the level and the category set.
+fn capture(level: Level, args: &fmt::Arguments<'_>) {
     if CAPTURE.with(|c| c.get()) {
         CAPTURED.with(|c| c.borrow_mut().push((level, args.to_string())));
     }
-    if !enabled(level) {
-        return;
-    }
+}
+
+fn write_line(level: Level, style: Style, args: fmt::Arguments<'_>) {
     let message = args.to_string();
     let message = EscapedMessage(&message);
     let ts = format_timestamp(SystemTime::now());
@@ -409,16 +434,27 @@ macro_rules! info_bold {
     };
 }
 
+/// `debug!(Mempool, "mempool: …")`. The first argument names a
+/// [`Category`] variant.
 #[macro_export]
 macro_rules! debug {
-    ($($arg:tt)*) => {
-        $crate::log_at($crate::Level::Debug, format_args!($($arg)*))
+    ($cat:ident, $($arg:tt)*) => {
+        $crate::log_cat(
+            $crate::Level::Debug,
+            $crate::Category::$cat,
+            format_args!($($arg)*),
+        )
     };
 }
 
+/// `trace!(Api, "api: …")`. Needs the category on and the level at TRACE.
 #[macro_export]
 macro_rules! trace {
-    ($($arg:tt)*) => {
-        $crate::log_at($crate::Level::Trace, format_args!($($arg)*))
+    ($cat:ident, $($arg:tt)*) => {
+        $crate::log_cat(
+            $crate::Level::Trace,
+            $crate::Category::$cat,
+            format_args!($($arg)*),
+        )
     };
 }

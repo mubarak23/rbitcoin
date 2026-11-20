@@ -561,7 +561,7 @@ async fn restore(
     let sam = match rebuild_session(sam_addr, &destination, forward_port, retry).await {
         Ok(sam) => sam,
         Err(e) => {
-            debug!("i2p sam {sam_addr}: rebuild failed: {e}");
+            debug!(I2p, "i2p sam {sam_addr}: rebuild failed: {e}");
             return None;
         }
     };

@@ -326,7 +326,7 @@ pub async fn dial_batch(
         let sinks = sinks.clone();
         clock.note_connection_attempt();
         let conn_type = ibd_conn_type(connect, addr);
-        debug!("{}", trying_connection_log(conn_type, addr));
+        debug!(P2p, "{}", trying_connection_log(conn_type, addr));
         let dialer = dialer.clone();
         let to = dialer.connect_timeout(addr, connect_timeout);
         let dial_perms = perms.clone();
@@ -837,7 +837,7 @@ pub fn disconnect_stalled_block_peers_at(
             .any(|o| o.id != id && owed.iter().any(|h| o.may_take_block(h, now_ms)));
         if !handoff {
             slots[at].getdata_wire.restart_window(now_ms);
-            debug!(
+            debug!(Ibd,
                 "ibd: keeping stalling manual peer={id} ({addr} {why}, {stall:?}, {n_work} in-flight, stream={stream}): no other peer can take its blocks"
             );
             return Vec::new();
