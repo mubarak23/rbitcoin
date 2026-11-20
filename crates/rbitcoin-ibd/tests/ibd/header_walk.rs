@@ -5294,6 +5294,37 @@ fn a_late_probe_reply_does_not_answer_a_later_walk_ask() {
     );
 }
 
+/// A probe's reply takes the probe's entry. The walk ask the same peer is sent
+/// next is then answered by its own reply.
+#[test]
+fn an_answered_probe_leaves_the_next_walk_ask_its_own_reply() {
+    let (_dir, mut hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("header-walk-probe-reply");
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let a1 = mine(gen, 1);
+    let (s0, _rx0) = slot(0);
+    let (s1, _rx1) = slot(1);
+    let mut st = IbdWorkState::new(vec![s0, s1], Some(gen), Some(0));
+    fill_queue(&mut st);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    apply(&mut st, &hub, 0, vec![a1]);
+    st.header_walk.walk = Default::default();
+    st.header_walk.probe = Some(1);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    assert_eq!(st.header_walk.probe_open, Some(1));
+    apply(&mut st, &hub, 1, vec![]);
+    assert_eq!(st.header_walk.probe_open, None, "the probe is answered");
+    set_min_work(&mut hub, [0xff; 32]);
+    st.header_walk.walk = Default::default();
+    note_lane(&mut st, 1);
+    note_asked_tip(&mut st, 1);
+    apply(&mut st, &hub, 1, vec![]);
+    assert!(
+        st.header_walk.emptied.contains(&1),
+        "the reply answers the walk ask at this tip"
+    );
+}
+
 /// A reply takes the ask it answers, so a later empty reply nobody asked for
 /// does not count at that tip.
 #[test]

@@ -1035,6 +1035,9 @@ fn answer_probe(
     }
     st.header_walk.probe_open = None;
     st.header_walk.probe_top = None;
+    // This reply does not reach `plan_header_reply`, which takes the entry
+    // for every other headers message.
+    let _ = super::header_walk::take_asked_tip(st, peer);
     let _ = super::header_walk::take_header_ask(st, peer);
     let past_tip = headers.first().is_some_and(|first| {
         parent_height(&st.hash_height, hub, first.prev_blockhash)
