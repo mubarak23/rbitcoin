@@ -128,8 +128,6 @@ pub struct QueuedHashSpan {
 impl QueuedHashSpan {
     #[doc(hidden)]
     pub fn load(hub: &ChainHub, lo: u32, hi: u32) -> Self {
-        // `lo > hi` is already empty in the queue span. An early return here
-        // is the same `hash_at` result, and `>` / `==` / `<` do not change it.
         Self {
             lo,
             hi,
@@ -318,8 +316,6 @@ impl TipRateTracker {
             let dt = now.duration_since(t0).as_secs_f64();
             // Ignore zero/negative clock skew; tiny dt would explode inst rate.
             if dt >= 0.5 {
-                // `saturating_sub` and `dt >= 0.5` already make this finite and
-                // non-negative. The old `is_finite && >= 0` guard matched `||`.
                 let inst = tip.saturating_sub(tip0) as f64 / dt;
                 self.rate_ema = Some(match self.rate_ema {
                     None => inst,

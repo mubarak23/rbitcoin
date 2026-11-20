@@ -108,7 +108,6 @@ impl TxSet {
     }
 
     fn intersection(&self, other: &Self) -> Self {
-        // `a & b` and `!(!a | !b)` are the same bits. The second drops `&`.
         Self(
             self.0
                 .iter()
@@ -139,7 +138,6 @@ impl TxSet {
                 }
                 let b = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                // `wi * 64` and `wi << 6` are the same index. `<<` drops the `*`.
                 Some((wi << 6) + b)
             })
         })
