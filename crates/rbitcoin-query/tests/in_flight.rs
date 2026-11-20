@@ -386,3 +386,22 @@ fn empty_note_is_noop() {
     assert!(m.is_empty());
     assert_eq!(m.pack_count(), 0);
 }
+
+/// The estimate charges 40 B for each txid entry and each pin beside the
+/// pin's own bytes; the maps' heap past it leaves those out, so the two
+/// together count the pins once and the maps once.
+#[test]
+fn the_estimate_and_the_maps_past_it_count_each_entry_once() {
+    let mut m = InFlight::new();
+    let pins: Vec<CreatePin> = (1..=500).map(pin).collect();
+    m.note_pins(
+        pins.iter().enumerate().map(|(i, p)| (Fk(i as u64 + 1), p)),
+        Some(1),
+    );
+    let payload: u64 = pins
+        .iter()
+        .map(|p| rbitcoin_query::archive::create_pin_approx_bytes(p) as u64)
+        .sum();
+    let est = m.size_snapshot().2;
+    assert_eq!(est + m.map_bytes_past_estimate(), payload + m.map_bytes());
+}

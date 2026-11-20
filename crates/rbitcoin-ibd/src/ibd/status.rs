@@ -20,6 +20,10 @@ pub struct LoopStats {
     pub confirm_blocks: AtomicU64,
     /// Times confirm stopped on a non-skippable reject.
     pub confirm_reject_stops: AtomicU64,
+    /// Blocks the confirm write took without their decoded-heap charge
+    /// (`ScriptOkBatch::holds`), so `owned.heap.decoded` missed them in
+    /// `scriptq` and `writeq`. Load holds every IBD body's charge: zero.
+    pub decoded_unheld: AtomicU64,
     /// Wall time in `assign_work_ordered`.
     pub assign_ns: AtomicU64,
     /// Unique hashes put into getdata this window.
@@ -53,6 +57,7 @@ impl Default for LoopStats {
             confirm_ns: AtomicU64::new(0),
             confirm_blocks: AtomicU64::new(0),
             confirm_reject_stops: AtomicU64::new(0),
+            decoded_unheld: AtomicU64::new(0),
             assign_ns: AtomicU64::new(0),
             assign_issued: AtomicU64::new(0),
             drain_ns: AtomicU64::new(0),

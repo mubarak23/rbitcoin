@@ -137,4 +137,8 @@ fn header_plan_bytes_follow_put_replace_and_tip_gc() {
     c.advance_tip(100);
     let gc = c.header_plan_bytes();
     assert!(gc < lists / 10, "{gc}");
+    // The maps keep the buckets 100 plans grew them to.
+    let maps = rbitcoin_primitives::heap_bytes::hash_table_bytes::<u32, Arc<HeaderPlanCache>>(100)
+        + rbitcoin_primitives::heap_bytes::hash_table_bytes::<[u8; 32], u32>(100);
+    assert!(gc >= maps, "{gc} < {maps}");
 }

@@ -2283,6 +2283,8 @@ struct WireRig {
     progress: std::time::Instant,
     cfg: rbitcoin_ibd::ibd::IbdConfig,
     stats: rbitcoin_ibd::ibd::status::LoopStats,
+    /// The stats the confirm engine writes.
+    engine_stats: std::sync::Arc<rbitcoin_ibd::ibd::status::LoopStats>,
     tip: BlockHash,
     tip_time: u32,
     t: u32,
@@ -2421,6 +2423,7 @@ impl WireRig {
             progress: std::time::Instant::now(),
             cfg: rbitcoin_ibd::ibd::IbdConfig::for_test(),
             stats: Default::default(),
+            engine_stats: Default::default(),
             tip,
             tip_time,
             t,
@@ -2522,7 +2525,7 @@ impl WireRig {
             std::sync::Arc::clone(&self.feed),
             ev_tx,
             std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            std::sync::Arc::new(Default::default()),
+            std::sync::Arc::clone(&self.engine_stats),
         );
         self.engine = Some((engine, ev_rx));
         queues
@@ -2937,6 +2940,50 @@ fn ibd_mutated_body_is_refetched_not_blacklisted() {
     );
     assert!(rig.st.body.is_missing(&next), "re-get");
     assert!(rig.st.slots[4].alive, "retarget miss keeps the sender");
+    rig.finish();
+}
+
+/// Every body the confirm write takes still carries its decoded-heap
+/// charge: load hands each batch's charges on, so `owned.heap.decoded`
+/// meters the script and write queues too.
+#[test]
+fn the_write_takes_every_body_with_its_decoded_charge() {
+    use bitcoin::ScriptBuf;
+    use rbitcoin_consensus::mine_regtest_paying;
+    use rbitcoin_ibd::ibd::state::InflightReq;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    let mut rig = WireRig::new("decoded-held", 1);
+    let (t, cbs) = (rig.t, rig.cbs.clone());
+    let spk = ScriptBuf::from_bytes(vec![0x51]);
+    let b1 = mine_regtest_paying(
+        rig.tip,
+        rig.tip_time + 600,
+        t + 1,
+        spk.clone(),
+        vec![WireRig::spend(cbs[0])],
+    );
+    let b2 = mine_regtest_paying(
+        b1.block_hash(),
+        rig.tip_time + 1200,
+        t + 2,
+        spk,
+        vec![WireRig::spend(cbs[1])],
+    );
+    rig.plant(&[&b1, &b2]);
+    for b in [&b1, &b2] {
+        rig.st.slots[0].in_flight.insert(b.block_hash());
+        rig.st.inflight.insert(b.block_hash(), InflightReq::new(1));
+        rig.deliver(1, b);
+    }
+    rig.start_engine();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while rig.hub.tip_height() != Some(t + 2) {
+        assert!(Instant::now() < deadline, "stall");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(rig.engine_stats.decoded_unheld.load(Ordering::Relaxed), 0);
     rig.finish();
 }
 

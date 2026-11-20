@@ -428,6 +428,14 @@ impl InFlight {
             + pack_nodes
     }
 
+    /// [`Self::map_bytes`] less the 40 B per txid entry and per pin that
+    /// `approx_bytes` already charges, so the estimate and this count each
+    /// entry once.
+    pub fn map_bytes_past_estimate(&self) -> u64 {
+        let charged = 40 * (self.creates.len() + self.outs.len()) as u64;
+        self.map_bytes().saturating_sub(charged)
+    }
+
     /// Lowest create id in the out window, if any.
     #[inline]
     pub fn min_out_id(&self) -> Option<u64> {

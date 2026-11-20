@@ -29,6 +29,8 @@ pub struct LoadAheadState {
     pub disconnect_gen_seen: u64,
     /// Blocks kept below the drain+fence snapshot around a 1 GiB accounted heap.
     pub retain: InflightRetain,
+    /// Where load publishes the in-flight pins for the perf line.
+    pub pins: &'static rbitcoin_query::process_mem_stats::PinMeter,
 }
 
 impl LoadAheadState {
@@ -41,6 +43,7 @@ impl LoadAheadState {
             last_loaded: None,
             disconnect_gen_seen: 0,
             retain: InflightRetain::default(),
+            pins: &rbitcoin_query::process_mem_stats::PINS,
         }
     }
 
@@ -54,10 +57,11 @@ impl LoadAheadState {
     }
 
     /// Publish the in-flight pins for the perf line: the governor's estimate
-    /// and the maps' heap at capacity.
+    /// and the maps' heap past it.
     fn publish_pins(&self) {
         let (.., est) = self.in_flight.size_snapshot();
-        rbitcoin_query::process_mem_stats::note_pins(est, self.in_flight.map_bytes());
+        self.pins
+            .note(est, self.in_flight.map_bytes_past_estimate());
     }
 
     /// Drop packs below the lookup wave's drain+fence snapshot, after that
@@ -2356,6 +2360,10 @@ pub fn spawn_confirm_engine(
                 );
                 leftover = next_left;
                 pending_clear = clear;
+                let unheld = batch.wire_blocks.len().saturating_sub(batch.holds.len());
+                loop_stats_wb
+                    .decoded_unheld
+                    .fetch_add(unheld as u64, Ordering::Relaxed);
                 confirm_thr_stats::add_write_recv_wait(&stats, t_recv.elapsed());
                 if confirm_stage_stopping(feed_wb.stopped(), hub_wb.query.confirm_cancelled()) {
                     break;

@@ -322,6 +322,33 @@ fn note_archived_creates_from_pairs_does_not_need_store() {
     );
 }
 
+/// Load publishes the in-flight pins for the perf line after a prune and
+/// after a clear: the estimate and the maps' heap past it.
+#[test]
+fn load_publishes_the_pins_after_a_prune_and_a_clear() {
+    use rbitcoin_ibd::ibd::confirm::{ConfirmQueueDepths, LoadAheadState};
+    use rbitcoin_query::process_mem_stats::PinMeter;
+    static METER: PinMeter = PinMeter::new();
+
+    let (_dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("publish-pins");
+    hub.ensure_genesis().unwrap();
+    let mut st = LoadAheadState::new(&hub);
+    st.pins = &METER;
+    let p = test_pin(42);
+    st.in_flight.note_pins([(Fk(42), &p)], Some(1));
+    st.drop_inflight_below(Some(100), &hub, &ConfirmQueueDepths::new());
+    let published = (
+        st.in_flight.size_snapshot().2,
+        st.in_flight.map_bytes_past_estimate(),
+    );
+    assert_eq!(METER.load(), published);
+    assert!(published.1 > 0, "the maps keep their buckets after a prune");
+
+    st.in_flight.note_pins([(Fk(43), &test_pin(43))], Some(2));
+    st.clear_all(&hub);
+    assert_eq!(METER.load(), (0, 0));
+}
+
 /// Drain can lead fence; tip prune must still keep the unconfirmed height.
 #[test]
 fn prune_inflight_keeps_unconfirmed_after_occupied_jumps() {

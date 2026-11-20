@@ -52,18 +52,40 @@ fn decoded_heap_bytes_cover_the_block_and_its_rows() {
     assert!(bytes >= wire + rows, "{bytes} < {wire} + {rows}");
 }
 
-/// A charge counts while the value carrying it lives: a clone counts again,
-/// and dropping both gives every byte back.
+/// A charge counts while the value carrying it lives, and dropping it gives
+/// its bytes back.
 #[test]
 fn a_heap_charge_follows_the_value_that_carries_it() {
     use rbitcoin_query::process_mem_stats::{HeapCharge, HeapGauge};
     static GAUGE: HeapGauge = HeapGauge::new();
     let a = HeapCharge::new(&GAUGE, 100);
     assert_eq!(GAUGE.load(), (1, 100));
-    let b = a.clone();
-    assert_eq!(GAUGE.load(), (2, 200));
+    let b = HeapCharge::new(&GAUGE, 50);
+    assert_eq!(GAUGE.load(), (2, 150));
     drop(a);
-    assert_eq!(GAUGE.load(), (1, 100));
+    assert_eq!(GAUGE.load(), (1, 50));
     drop(b);
     assert_eq!(GAUGE.load(), (0, 0));
+}
+
+/// The governor reads the owned sizes once per pruning wave on the load
+/// thread and never the heap meters, so that snapshot leaves them out; the
+/// meters are read for the perf line only.
+#[test]
+fn the_owned_snapshot_leaves_the_heap_meters_to_the_perf_line() {
+    let (_dir, q) = rbitcoin_query::testutil::tiny_query_labeled("heap-meters-split");
+    let block = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest);
+    let pres: Arc<[TxPrecompute]> = block
+        .txdata
+        .iter()
+        .map(TxPrecompute::from_tx)
+        .collect::<Vec<_>>()
+        .into();
+    let bytes = decoded_heap_bytes(&block, &pres);
+    let live = ResolvedWire::new(Arc::new(block), pres);
+    assert!(q.heap_meters().decoded >= bytes);
+    assert_eq!(q.process_owned_size_snapshot().heap.decoded, 0);
+    q.publish_progress_snapshots();
+    assert!(q.published_owned_sizes().heap.decoded >= bytes);
+    drop(live);
 }
