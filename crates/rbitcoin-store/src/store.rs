@@ -2521,21 +2521,21 @@ pub fn open_layout_refuse_old(path: &Path, meta_ver: u16) -> Result<(), StoreErr
 pub fn drop_unread_store_leftovers(path: &Path) {
     let leftover_epoch = path.join("archive_epoch");
     if leftover_epoch.exists() {
-        eprintln!(
+        rbitcoin_log::warn!(
             "store: dropping leftover archive_epoch (unread dual-path leftover; schema 17 does not keep it)"
         );
         let _ = std::fs::remove_file(&leftover_epoch);
     }
     let leftover_wire = path.join("wire");
     if leftover_wire.exists() {
-        eprintln!("store: dropping leftover store/wire (unused; body queue is RAM-only)");
+        rbitcoin_log::warn!("store: dropping leftover store/wire (unused; body queue is RAM-only)");
         let _ = std::fs::remove_dir_all(&leftover_wire);
         let _ = std::fs::remove_file(&leftover_wire);
     }
     if crate::sp_tweaks::SpTweaksTable::discard_legacy_files(path) {
-        eprintln!(
+        rbitcoin_log::warn!(
             "store: dropping leftover sp_tweaks.idx/body files \
-             (schema 17 uses segmented dirs; --sptweaks backfill regenerates)"
+             (schema 17 uses segmented dirs; --sp-tweaks backfill regenerates)"
         );
     }
 }

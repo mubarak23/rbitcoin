@@ -2057,7 +2057,22 @@ fn create_does_not_write_archive_epoch() {
     std::fs::write(dir.join("wire").join("leftover"), b"x").unwrap();
     std::fs::write(dir.join("sp_tweaks.idx"), b"old-idx").unwrap();
     std::fs::write(dir.join("sp_tweaks.body"), b"old-body").unwrap();
+    rbitcoin_log::capture_logs(true);
     let s = Store::open_tiny(&dir).unwrap();
+    let logs = rbitcoin_log::take_logs();
+    rbitcoin_log::capture_logs(false);
+    let warned = |needle: &str| {
+        logs.iter()
+            .any(|(level, line)| *level == rbitcoin_log::Level::Warn && line.contains(needle))
+    };
+    assert!(warned("dropping leftover archive_epoch"), "{logs:?}");
+    assert!(warned("dropping leftover store/wire"), "{logs:?}");
+    // The hint names the flag the node parses; `--sptweaks` exits 2.
+    assert!(
+        warned("dropping leftover sp_tweaks.idx/body files")
+            && warned("--sp-tweaks backfill regenerates"),
+        "{logs:?}"
+    );
     assert!(!dir.join("archive_epoch").exists());
     assert!(!dir.join("wire").exists());
     assert!(!dir.join("sp_tweaks.idx").is_file());
