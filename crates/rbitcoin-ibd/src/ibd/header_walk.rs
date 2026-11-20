@@ -189,9 +189,10 @@ pub struct HeaderWalk {
     pub walk: Lane,
     /// Expired asks. Not written to `header.adopt`.
     pub header_misses: HashMap<usize, u8>,
-    /// Walk tip each peer's last walk or challenge ask named, until that
-    /// peer's next headers reply. Not written to `header.adopt`.
-    pub asked_tip: HashMap<usize, BlockHash>,
+    /// Walk tip each unanswered headers ask to a peer named, oldest first;
+    /// none for a probe. A headers message has no request id, so each one
+    /// from that peer answers the oldest. Not written to `header.adopt`.
+    pub asked_tips: HashMap<usize, std::collections::VecDeque<Option<BlockHash>>>,
     /// Difficulty at `base_hash`, restored when every checkpoint is rewound.
     pub base_diff: DiffSnap,
     /// Heavier-so-far alternate that has not yet passed the candidate.
@@ -237,6 +238,10 @@ pub const LOOKAHEAD_ASK: Duration = Duration::from_secs(5);
 /// Missed header asks before header-role retirement or disconnection.
 #[doc(hidden)]
 pub const HEADER_MISS_DISCONNECT: u8 = 2;
+/// Unanswered asks remembered per peer; past it the oldest is forgotten. A
+/// peer that answers in order is dropped for its expired asks long before it
+/// has this many open.
+const ASKED_TIPS_MAX: usize = 8;
 /// Recent block traffic permits two extra header misses, not indefinite silence.
 const PRODUCTIVE_HEADER_MISS_DISCONNECT: u8 = 4;
 /// Header-only timeouts must not destroy a productive block session. Match
@@ -830,7 +835,7 @@ pub fn forget_walk_peer(st: &mut IbdWorkState, peer: usize) {
     st.header_walk.walk_quiet.remove(&peer);
     st.header_walk.header_timeout_peers.remove(&peer);
     st.header_walk.header_misses.remove(&peer);
-    st.header_walk.asked_tip.remove(&peer);
+    st.header_walk.asked_tips.remove(&peer);
     if st.header_walk.reserved == Some(peer) {
         st.header_walk.reserved = None;
     }
@@ -3256,6 +3261,7 @@ pub fn arm_header_ask(
             }
         };
         if sent {
+            note_ask(st, peer, None);
             st.header_walk.probe_open = Some(peer);
             let now = Instant::now();
             if let Some(slot) = st.slots.iter_mut().find(|s| s.id == peer) {
@@ -3283,10 +3289,23 @@ pub fn arm_header_ask(
 /// Record the walk tip a walk or challenge ask to `peer` named.
 #[doc(hidden)]
 pub fn note_asked_tip(st: &mut IbdWorkState, peer: usize) {
-    match st.header_walk.tip_hash() {
-        Some(tip) => st.header_walk.asked_tip.insert(peer, tip),
-        None => st.header_walk.asked_tip.remove(&peer),
-    };
+    let tip = st.header_walk.tip_hash();
+    note_ask(st, peer, tip);
+}
+
+/// Queue one sent headers ask behind the asks `peer` has not answered.
+fn note_ask(st: &mut IbdWorkState, peer: usize, tip: Option<BlockHash>) {
+    let asks = st.header_walk.asked_tips.entry(peer).or_default();
+    if asks.len() == ASKED_TIPS_MAX {
+        asks.pop_front();
+    }
+    asks.push_back(tip);
+}
+
+/// The walk tip named by the ask this headers message from `peer` answers.
+#[doc(hidden)]
+pub fn take_asked_tip(st: &mut IbdWorkState, peer: usize) -> Option<BlockHash> {
+    st.header_walk.asked_tips.get_mut(&peer)?.pop_front()?
 }
 
 /// Time from connect to the first block body. `None` until a body arrives.
@@ -4288,7 +4307,7 @@ pub fn parse_adopt(bytes: &[u8]) -> Option<HeaderWalk> {
         probe_top: None,
         walk: Lane::default(),
         header_misses: HashMap::new(),
-        asked_tip: HashMap::new(),
+        asked_tips: HashMap::new(),
         base_diff,
         challenger: None,
         adopt_retired: false,

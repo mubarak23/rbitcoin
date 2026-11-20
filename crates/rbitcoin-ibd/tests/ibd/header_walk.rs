@@ -588,8 +588,10 @@ fn apply(st: &mut IbdWorkState, hub: &ChainHub, peer: usize, headers: Vec<Header
     );
 }
 
-/// An empty reply to a walk ask this peer was sent at the current tip.
+/// An empty reply to a walk ask this peer was sent at the current tip, with
+/// every earlier ask to it already answered.
 fn asked_empty(st: &mut IbdWorkState, hub: &ChainHub, peer: usize) {
+    st.header_walk.asked_tips.remove(&peer);
     note_lane(st, peer);
     note_asked_tip(st, peer);
     apply(st, hub, peer, vec![]);
@@ -5149,7 +5151,7 @@ fn unasked_empty_replies_keep_the_candidate() {
     set_min_work(&mut hub, [0xff; 32]);
     for peer in [0, 1] {
         st.header_walk.walk = Default::default();
-        st.header_walk.asked_tip.clear();
+        st.header_walk.asked_tips.clear();
         apply(&mut st, &hub, peer, vec![]);
     }
     assert_eq!(st.header_walk.tip_hash(), Some(a1.block_hash()));
@@ -5217,6 +5219,81 @@ fn a_late_empty_reply_leaves_a_moved_tip_live() {
     assert!(!st.header_walk.dead_ends.contains(&a2.block_hash()));
 }
 
+/// A peer asked again at the new tip still owes the answer to its older ask.
+/// Its first empty reply answers the old tip and leaves the new one live; its
+/// second answers the new tip.
+#[test]
+fn a_late_empty_reply_answers_the_older_of_two_asks() {
+    let (_dir, mut hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("header-walk-two-asks");
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let a1 = mine(gen, 1);
+    let a2 = mine(a1.block_hash(), 2);
+    let (s0, _rx0) = slot(0);
+    let (s1, _rx1) = slot(1);
+    let mut st = IbdWorkState::new(vec![s0, s1], Some(gen), Some(0));
+    fill_queue(&mut st);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    apply(&mut st, &hub, 0, vec![a1]);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    assert_eq!(st.header_walk.walk.peer, Some(0));
+    assert_eq!(expire_header_ask(&mut st), Some(0));
+    note_lane(&mut st, 1);
+    apply(&mut st, &hub, 1, vec![a2]);
+    assert_eq!(st.header_walk.tip_hash(), Some(a2.block_hash()));
+    st.slots[1].peer_height = 2;
+    set_min_work(&mut hub, [0xff; 32]);
+    st.header_walk.walk = Default::default();
+    note_lane(&mut st, 0);
+    note_asked_tip(&mut st, 0);
+    apply(&mut st, &hub, 0, vec![]);
+    assert!(
+        !st.header_walk.emptied.contains(&0),
+        "the first reply answers the ask at the old tip"
+    );
+    assert_eq!(st.header_walk.tip_hash(), Some(a2.block_hash()));
+    assert!(!st.header_walk.dead_ends.contains(&a2.block_hash()));
+    apply(&mut st, &hub, 0, vec![]);
+    assert!(
+        st.header_walk.dead_ends.contains(&a2.block_hash()),
+        "the second reply answers the ask at the new tip"
+    );
+}
+
+/// A probe ask names no walk tip. Its late empty reply answers the probe, not
+/// the walk ask the same peer was sent after it.
+#[test]
+fn a_late_probe_reply_does_not_answer_a_later_walk_ask() {
+    let (_dir, mut hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("header-walk-late-probe");
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let a1 = mine(gen, 1);
+    let (s0, _rx0) = slot(0);
+    let (s1, _rx1) = slot(1);
+    let mut st = IbdWorkState::new(vec![s0, s1], Some(gen), Some(0));
+    fill_queue(&mut st);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    apply(&mut st, &hub, 0, vec![a1]);
+    st.header_walk.walk = Default::default();
+    st.header_walk.probe = Some(1);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    assert_eq!(st.header_walk.probe_open, Some(1));
+    assert_eq!(expire_header_ask(&mut st), None);
+    set_min_work(&mut hub, [0xff; 32]);
+    note_lane(&mut st, 1);
+    note_asked_tip(&mut st, 1);
+    apply(&mut st, &hub, 1, vec![]);
+    assert!(
+        !st.header_walk.emptied.contains(&1),
+        "the first reply answers the probe"
+    );
+    apply(&mut st, &hub, 1, vec![]);
+    assert!(
+        st.header_walk.emptied.contains(&1),
+        "the second reply answers the walk ask at this tip"
+    );
+}
+
 /// A reply takes the ask it answers, so a later empty reply nobody asked for
 /// does not count at that tip.
 #[test]
@@ -5233,11 +5310,11 @@ fn an_answered_ask_does_not_count_a_later_unasked_empty() {
     let asked = st.header_walk.walk.peer.unwrap();
     apply(&mut st, &hub, asked, vec![a1]);
     set_min_work(&mut hub, [0xff; 32]);
-    st.header_walk.asked_tip.clear();
+    st.header_walk.asked_tips.clear();
     note_lane(&mut st, 0);
     note_asked_tip(&mut st, 0);
     apply(&mut st, &hub, 0, vec![mine(a1.block_hash(), 2)]);
-    assert!(!st.header_walk.asked_tip.contains_key(&0));
+    assert!(st.header_walk.asked_tips[&0].is_empty());
     apply(&mut st, &hub, 0, vec![]);
     assert!(!st.header_walk.emptied.contains(&0));
 }

@@ -709,7 +709,7 @@ pub fn plan_header_reply(
     peer: usize,
     headers: Vec<bitcoin::block::Header>,
 ) -> HeaderPlan {
-    let asked = st.header_walk.asked_tip.remove(&peer);
+    let asked = super::header_walk::take_asked_tip(st, peer);
     // Failed proof is not a low-work miss. Drop the sender and the ask so
     // the next live peer can walk. Leaving the ask in flight blocks that peer.
     if headers
