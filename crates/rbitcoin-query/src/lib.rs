@@ -300,7 +300,7 @@ pub struct HeapMeters {
 ///
 /// Write publishes loc packs from TLS after note/prune; load publishes the
 /// in-flight pins after each prune, disconnect drop and clear. Decoded
-/// bodies charge [`DECODED`] while they live. Sampled by the ~5s IBD perf
+/// bodies charge [`process_mem_stats::DECODED`] while they live. Sampled by the ~5s IBD perf
 /// line.
 pub mod process_mem_stats {
     use std::sync::atomic::{AtomicU64, Ordering};
