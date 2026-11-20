@@ -14,6 +14,7 @@ use crate::error::StoreError;
 use crate::io_backend::{self, ReadIoBackend};
 use crate::var_table::VarTable;
 use rbitcoin_primitives::Fk;
+use std::cell::RefCell;
 
 /// What body bytes to fetch after the range is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,6 +400,47 @@ pub fn group_sqe(
     }
 }
 
+/// Largest merged-read bounce buffer a thread keeps for the next wave.
+const BOUNCE_POOL_MAX_BYTES: usize = 256 * 1024;
+/// Bounce buffers one thread keeps; a wave has only a few merged groups.
+const BOUNCE_POOL_MAX_BUFS: usize = 16;
+/// Total bounce bytes one thread keeps across waves.
+const BOUNCE_POOL_MAX_TOTAL_BYTES: usize = 1024 * 1024;
+
+thread_local! {
+    /// Merged peeks read the page span into a bounce buffer, then copy each
+    /// destination out. Reusing the buffer keeps that span out of the
+    /// allocator (and its zeroing) on every wave.
+    static BOUNCE_POOL: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn take_bounce(span: usize) -> Vec<u8> {
+    let pooled = BOUNCE_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        pool.iter()
+            .position(|buf| buf.len() >= span)
+            .map(|i| pool.swap_remove(i))
+    });
+    pooled.unwrap_or_else(|| vec![0u8; span])
+}
+
+fn return_bounces(buffers: impl IntoIterator<Item = Vec<u8>>) {
+    BOUNCE_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let mut total: usize = pool.iter().map(Vec::len).sum();
+        for buf in buffers {
+            if buf.len() > BOUNCE_POOL_MAX_BYTES || pool.len() >= BOUNCE_POOL_MAX_BUFS {
+                continue;
+            }
+            if total.saturating_add(buf.len()) > BOUNCE_POOL_MAX_TOTAL_BYTES {
+                continue;
+            }
+            total = total.saturating_add(buf.len());
+            pool.push(buf);
+        }
+    });
+}
+
 #[doc(hidden)]
 pub fn pread_grouped_peeks(
     jobs: &mut [IdxBodyJob],
@@ -413,16 +455,11 @@ pub fn pread_grouped_peeks(
     }
     let windows: Vec<(u64, u64)> = dests.iter().map(|d| (d.off, d.len as u64)).collect();
     let groups = group_body_peeks(&windows);
-    let mut bounce: Vec<Option<Vec<u8>>> = groups
-        .iter()
-        .map(|(_, span, members)| {
-            if members.len() == 1 {
-                None
-            } else {
-                Some(vec![0u8; *span as usize])
-            }
-        })
-        .collect();
+    let mut bounce: Vec<Option<Vec<u8>>> = Vec::with_capacity(groups.len());
+    for (_, span, members) in &groups {
+        let span = usize::try_from(*span).map_err(|_| StoreError::Corrupt("body peek span"))?;
+        bounce.push((members.len() != 1).then(|| take_bounce(span)));
+    }
     // SAFETY: each SQE buffer is a distinct job.body slice (singleton) or bounce
     // allocation (merged). Dest windows do not overlap jobs in one wave.
     let mut ops: Vec<ReadOp<'_>> = Vec::with_capacity(groups.len());
@@ -494,6 +531,7 @@ pub fn pread_grouped_peeks(
             }
         }
     }
+    return_bounces(bounce.into_iter().flatten());
     Ok(groups.len() as u64)
 }
 

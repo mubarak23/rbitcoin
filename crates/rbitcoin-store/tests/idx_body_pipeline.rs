@@ -461,6 +461,78 @@ fn pipeline_body_backends_agree() {
 }
 
 #[test]
+fn pread_grouped_peeks_reuses_merged_bounce_buffers() {
+    use rbitcoin_store::io_backend::ReadIoBackend;
+
+    let (dir, t) = temp_tx();
+    let tx = TxRecord {
+        txid: [0x6au8; 32],
+        version: 1,
+        locktime: 0,
+        input_count: 1,
+        output_count: 1,
+    };
+    let inputs = vec![InputRecord::coinbase(u32::MAX, vec![0x01], vec![])];
+    let outs = vec![OutputRecord::unspent(1, vec![0x51; 20_000])];
+    let fk = t
+        .put_full_batch_indexed(&[(tx, inputs, outs)], true)
+        .unwrap()[0];
+    let (off, len) = t.body_range(fk).unwrap();
+
+    let len_each = 4096usize;
+    let first = off;
+    let second = off + 4096 + 8192;
+    assert!(second + len_each as u64 <= off + len);
+    let windows = [(first, len_each as u64), (second, len_each as u64)];
+    let groups = group_body_peeks(&windows);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].2, vec![0, 1]);
+
+    let mut jobs = [0, 1].map(|i| IdxBodyJob {
+        id: i + 1,
+        range: None,
+        body: vec![0u8; len_each],
+        ok: false,
+        need_vouts: Vec::new(),
+        n_out: 0,
+    });
+    let dests = [
+        PeekDest {
+            job: 0,
+            off: first,
+            dest: 0,
+            len: len_each,
+        },
+        PeekDest {
+            job: 1,
+            off: second,
+            dest: 0,
+            len: len_each,
+        },
+    ];
+    let fd = t.body.body_read_fd();
+    let path = t.body.body_file_path();
+    let backend = ReadIoBackend::Pread;
+    pread_grouped_peeks(&mut jobs, &dests, fd, path, backend, true).unwrap();
+    let first_body = jobs[0].body.clone();
+    let second_body = jobs[1].body.clone();
+
+    let (groups_n, asked) = crate::alloc_count::asked_by(|| {
+        pread_grouped_peeks(&mut jobs, &dests, fd, path, backend, true).unwrap()
+    });
+    assert_eq!(groups_n, 1);
+    assert_eq!(jobs[0].body, first_body);
+    assert_eq!(jobs[1].body, second_body);
+    let span = groups[0].1;
+    assert!(
+        asked.largest < span,
+        "largest={} span={span}: the merged bounce was reallocated",
+        asked.largest
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn pipeline_full_matches_record_range_and_decode() {
     let (dir, t) = temp_tx();
     let fks = put_n(&t, 12);
