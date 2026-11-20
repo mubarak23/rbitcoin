@@ -35,7 +35,7 @@ Operator copy-paste (which dirs to wipe; kill-9 is not a migrate):
 | Can this datadir open, migrate, or must it be refused? | [Changing durable bytes](#changing-durable-bytes), then [schema history](./SCHEMA_HISTORY.md) for earlier releases |
 | What do I need to wipe or rebuild as an operator? | [Schema upgrade](./docs/operator/storage.md#schema-upgrade) |
 | Which files make up a datadir? | [Datadir layout](#datadir-layout) |
-| Where is a transaction, header, or scripthash lookup stored? | [Class A transactions](#class-a--transactions), [hash heads](#hash-heads-headerhead--generic), [Class B scripthash](#class-b--scripthash-electrum) |
+| Where is a transaction, header, or scripthash lookup stored? | [Class A transactions](#class-a--transactions), [hash heads](#hash-heads-headerhead-generic), [Class B scripthash](#class-b--scripthash-electrum) |
 | What is the current encoding or table geometry? | Pick the table in [Design at a glance](#design-at-a-glance), then follow its section below |
 | Does this change require a schema bump? | [What forces a schema bump](#what-forces-a-schema-bump) |
 | How large is the reference mainnet store? | [Mainnet census](#mainnet-census-this-trees-reference-datadir-2026-08-13) |
@@ -52,7 +52,7 @@ Operator copy-paste (which dirs to wipe; kill-9 is not a migrate):
 - [Class A headers](#class-a--headers)
 - [Class A transactions](#class-a--transactions)
 - [Tx address head](#tx-address-head-segmented-txhead)
-- [Hash heads](#hash-heads-headerhead--generic)
+- [Hash heads](#hash-heads-headerhead-generic)
 - [Class B scripthash](#class-b--scripthash-electrum)
 - [Class C chain tip](#class-c--chain-tip)
 - [Mainnet census](#mainnet-census-this-trees-reference-datadir-2026-08-13)
@@ -77,13 +77,12 @@ any table parser runs. There is no per-version rewrite for 13–21. Layouts
 from those versions are in [`SCHEMA_HISTORY.md`](./SCHEMA_HISTORY.md); the
 code that opened them is gone.
 **Leftover index layouts a meta ≥ 22 datadir can still hit:** fuse8 **v1**,
-flat `tx.head.meta`, flat `*.idx.meta`, a file (not a directory)
+flat `tx.head.meta`, a file (not a directory)
 `scripthash.body`, and pack8 **Paged** (mode 10) **refuse**. Errors:
 
 ```text
 index refuses fuse8 v1; wipe store/tx.head and store/scripthash* then restart (Class A kept; tx.head rebuilds, SH rematerializes with --sh-index)
 index refuses flat tx.head.meta; wipe store/tx.head then restart (Class A kept; tx.head rebuilds)
-index refuses flat *.idx.meta; place files under store/{stem}.idx/ (meta + NNNNNN segments) then restart (Class A kept)
 index refuses Shared (file) scripthash.body; wipe store/scripthash* then restart (Class A kept; SH rematerializes with --sh-index)
 index refuses pack8 Paged (mode 10) scripthash heads; wipe store/scripthash* then restart (Class A kept; SH rematerializes with --sh-index)
 ```  
@@ -118,7 +117,7 @@ schema 18.
 |--------|----------------|
 | Class A | Split `txout` / `seqsigwit` / `spent`; thin LAYOUT17 meta; kinds **0–9**; 8 B spent slots; `spent.ovf` |
 | Identity | Dense `txid.body` (32 B/fk); segmented `tx.head` (25-bit + fuse8 v2) |
-| Loc | `create.loc` (2 B/create + `create.off` + ovf) and cold `seqsigwit.loc`; leftover Class A `{txout,spent,seqsigwit}.idx/` unlinked on empty 21–24. Flat `*.idx.meta` **refused**. |
+| Loc | `create.loc` (2 B/create + `create.off` + ovf) and cold `seqsigwit.loc`; leftover Class A `{txout,spent,seqsigwit}.idx/` unlinked on empty 21–24. |
 | Class B | SH runs `key_len=40` unique `(sh, create_fk)`; megakey pages ULEB deltas (`ver=1`); body **dir** (sharded). Leftover file body **refused**. Slab **class** is the byte allocation (32…2048); `used` is the fk count and may exceed the old geometric `slab_cap(class)` when the ULEB stream fits. Decode `used` fks from the payload. |
 | Class C | `confirmed[]` + `header_txs_*`; no `tx_height.body`; `strong_tx` bitset |
 | Tweaks | Segmented `sp_tweaks.idx/` + `sp_tweaks.body/` (`off:u32`, body `0`/`33`) |
@@ -212,7 +211,7 @@ itself changed.
 | Non-coinbase prevout | On-disk **`create_fk:u64` + CompactSize vout** | Smaller than `prev_txid[32]`; archive stamps fk once; wire fills soft `prev_txid` from sidefile/create |
 | Txid → create | Segmented keyless **`tx.head.*`** (25-bit OA open + MPHF/fuse sealed) | Open page from `mix_txid`; seal-time value-assigned MPHF + fuse8; **txid.body** verifies identity |
 | Spentness | Annotation on **create output** (+ rare multi-list) | No multi-GiB `point.head` open-hash |
-| Electrum index | Thin **create_tx_fk only** (inline ≤2 / geometric slabs / megakey pages) | Packed to ~run size; expand vouts/value/height at query via Class A + Class C |
+| Electrum index | Thin **create_tx_fk only** (inline 1 / geometric slabs / megakey pages) | Packed to ~run size; expand vouts/value/height at query via Class A + Class C |
 | Best-chain commit | Advance **`confirmed[]` last** | Tip is the commit point; strong/height may lead tip after kill |
 
 ---
@@ -223,6 +222,8 @@ itself changed.
 <datadir>/
   store/
     meta                         # store magic + schema version
+    store.secret                 # 32 B CSPRNG secret (scripts/witness XOR, head mix)
+    tip_seal                     # soft tip seal after a complete Class C barrier. No SCHEMA_VERSION bump
     header.body / header.head    # Class A headers + hash index (overflow: header.head.gN)
     header.adopt                     # IBD checkpoint list + milestone hash (not a header-chain copy)
     block.invalid                    # blocks that failed connect, kept across restart
@@ -238,6 +239,7 @@ itself changed.
     scripthash.rebuild               # optional: one byte. The next start wipes and rebuilds the scripthash index; removed when that rebuild finishes. No SCHEMA_VERSION bump
     spent.body                                              # sole-spender 8 B × n_out; leftover spent.off unlinked
     spent.delta/{seg.<id>, idx.<id>, log.<id>, commit, fold}  # schema-30 spend delta overlay
+    spend_durable                    # annotated-through A + durable-through D heights. No SCHEMA_VERSION bump
     tx.body / tx.idx.*                              # schema ≤14 packed (refused if non-empty)
     txid.body                                       # dense create_fk-ordered txids (schema 13+)
     txstat.body / txstat.ovf / txstat.blk            # 8 B/create ULEB econ + per-header tails (schema 25)
@@ -257,6 +259,8 @@ itself changed.
     scripthash.ovf/NNNNNN[.fuse8][.idx]                  # L0 SHSR pack8
     scripthash.ovf/NNNNNN.mphf|.val|.fuse8               # L1 promoted ovf (at most one)
     scripthash.runs              # leftover catalog (key_len=40); discarded at tip
+    scripthash.include_hwm       # max create_fk fully in the durable SH index
+    scripthash.cold_progress     # SHCOLDP1 cold-materialize resume marker
     scripthash.unsorted/keys/NN/  # pass 1 dir of SHKSP01 spills (000000…); merge identity-map fold + one walk to head+multi fuse, unlinks; DONE.keys=SHKEYS02 last_fk marker
     scripthash.unsorted/multi/NN.fuse8  # throwaway fuse8 of 0xFFFF keys for pass 2
     scripthash.unsorted/post/NN/  # pass 2 dir of SHPST01 spills (000000…); pack folds to one map then slot_for_key16 + 2+ body; DONE.post=SHPOST02 last_fk; unlinked after pack
@@ -375,7 +379,7 @@ weight `4 * (80 + compactsize(n)) + Σ weight`).
 
 ### `header.head`
 
-Open-address hash head (see [Hash heads](#hash-heads-headerhead--generic)): key = 16 B prefix of block hash → header fk. Multi-list for prefix collisions. Load ceiling **7/8**; overflow is a sibling generation, not an in-place rehash.
+Open-address hash head (see [Hash heads](#hash-heads-headerhead-generic)): key = 16 B prefix of block hash → header fk. Multi-list for prefix collisions. Load ceiling **7/8**; overflow is a sibling generation, not an in-place rehash.
 
 **Create:** single file. Mainnet **2²²** slots (~96 MiB sparse, ~3.67 M headers at 7/8). Tiny tests use 64 slots so generation roll is exercised.
 
@@ -702,7 +706,7 @@ bits-widen / shadow-resize path. Module map: [`docs/heads.md`](./docs/heads.md).
 | Fuse file | `BF8R` + **version** + body. **v2** = in-tree LE layout (current). **v1** = historical xorf+bincode — **refused** (wipe `store/tx.head` and `store/scripthash*`; Class A kept) |
 | Probe | Open tail: page-local double-hash (1024 slots/page) through a private slot table (no syscall); a slot whose fingerprint differs is skipped; `txid.body` verifies the rest. Sealed: RAM fuse skip, then unique 4 KiB packed BDZ `g` pages (not loaded into process heap); MPHF output is `rel−1` |
 | Insert | First empty in-page (or same relative id idempotent); second same-txid goes **deeper** |
-| Lookup | Pin by txid → **hot** (open + ages ≤3) → ID/idx → **cold** (ages ≥4) if needed; fuse-gate sealed; body-verify ([`docs/heads.md`](./docs/heads.md)) |
+| Lookup | Pin by txid → **open** (every unsealed table) → each **sealed** segment newest-first; fuse-gate sealed; body-verify ([`docs/heads.md`](./docs/heads.md)) |
 | Legacy | Monolithic `tx.head` / `tx.head.new` / `tx.head.resize` / `tx.head.overflow` **refused on open** — reindex |
 
 **Publish order on seal:** open the next private table and persist

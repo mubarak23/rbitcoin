@@ -45,8 +45,8 @@ hit so a connected sibling can win.
 
 ## Sealed-age probe split (not page-cache)
 
-`sealed_age_from_index` vs `HEAD_PROBE_HOT_MAX_AGE` (3) still labels sealed
-age for stats and for the `SealedHot` / `Cold` probe-coverage split. Lookup
+`sealed_age_from_index` still labels sealed
+age for winner-age stats only; probe waves do not filter by age. Lookup
 does not union ages 1..=3 before identity. It is not an IO flag.
 `RWF_DONTCACHE` is retired ([`SCHEMA.md`](../SCHEMA.md) Schema 17 freeze).
 

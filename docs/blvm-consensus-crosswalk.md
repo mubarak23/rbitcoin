@@ -136,7 +136,7 @@ compiled. A regtest node with those features on would disagree with us.
 | Script-flag exception hashes (BIP16 mainnet block, taproot block at height 692,261) | `ScriptVerifyFlags::consensus_at` | `script_flags_follow_core_exception_table`; `exception_hashes_change_which_scripts_run` |
 | Milestone script skip is two header hashes on the path, not assumevalid chainwork | `milestone` gate, confirm | `anchored_milestone_skips_a_failing_p2pkh_script` |
 | Testnet4 is its own network: BIP94 on, BIP34 hash null, so the BIP30 ancestry skip never applies | `ChainParams::testnet4` | `params.rs` |
-| Signet challenge bytes are re-encoded like Core `CScript <<`, and the challenge runs without `CLEANSTACK` | `signet::check_signet_block_solution` | `signet_section_reencodes_pushes_like_core_cscript`; `signet_challenge_op_true_twice_is_not_cleanstack`; `signet_challenge_p2wpkh_empty_witness_rejected` |
+| Signet challenge bytes are re-encoded like Core `CScript <<`, and the challenge runs without `CLEANSTACK` | `signet::validate_signet_block_solution` | `signet_section_reencodes_pushes_like_core_cscript`; `signet_challenge_op_true_twice_is_not_cleanstack`; `signet_challenge_p2wpkh_empty_witness_rejected` |
 | Mempool has no 65-byte non-witness floor (their MEM-003). Replacement does not require an RBF signal (their “standard” mode, not the conservative mode) | `mempool::accept::prepare_admit`, `rbf_pays_for_replacement` | `accept_life_journey`; `replacement_unconfirmed_inputs_follow_libre_rule` |
 
 ## Register map
@@ -175,9 +175,9 @@ Paths are under `crates/`. Tests are `#[test]` functions unless noted.
 | BLK-009 | Merkle root matches txids | `merkle_root_mutated` before other body rules | `s6_rejects_merkle_root_mismatch`; `body_rules_run_after_the_header_merkle_check` | match |
 | BLK-010 | Reject adjacent duplicate hashes (CVE-2012-2459) | `rbitcoin-primitives` `merkle_root_mutated` | `merkle_mutation_flags_a_repeated_tail_at_any_level` | match |
 | BLK-011 | SegWit commitment and weight when witness rules apply | witness-commitment scan in the structure walk | `s8_accepts_witness_commitment_with_reserved_value`; `s8_last_witness_commitment_output_wins`; `s8_rejects_nonce_lengths_beside_32` | match |
-| BLK-012 | After BIP54, ≤ 2,500 sigops per non-coinbase tx | not implemented | — | absent |
-| BLK-013 | After BIP54, stripped size exactly 64 is invalid for a non-coinbase | not implemented. The coinbase-less 64-byte case is the mutation flag above, and it is not this rule | — | absent |
-| BLK-014 | After BIP54, time-warp bound on a retarget boundary | `check_timewarp`, only if `enforce_bip94` (testnet4). Not version-bits BIP54 | `timewarp_floor_is_600_seconds_before_the_parent_on_testnet4`; `bip94_proposal_rejects_a_timewarp` | differs |
+| BLK-012 | After BIP54, ≤ 2,500 sigops per non-coinbase tx | `reject_bip54_sigops` when `enforce_bip54` | `bip54_sigops_vectors` | match |
+| BLK-013 | After BIP54, stripped size exactly 64 is invalid for a non-coinbase | `reject_bip54_tx_size` on every tx, coinbase included, when `enforce_bip54`. The coinbase-less 64-byte case is the mutation flag above, and it is not this rule | `bip54_tx_size_vectors` | differs |
+| BLK-014 | After BIP54, time-warp bound on a retarget boundary | `check_period_times`: 7,200 s with `enforce_bip54`, 600 s with `enforce_bip94` (testnet4). Not version-bits BIP54 | `bip54_timestamp_vectors`; `timewarp_floor_is_600_seconds_before_the_parent_on_testnet4`; `bip94_proposal_rejects_a_timewarp` | match |
 
 ### 3. Transaction
 
@@ -208,11 +208,11 @@ Paths are under `crates/`. Tests are `#[test]` functions unless noted.
 |----|------------|------------|------|---|
 | CB-001 | One null input, index `0xffffffff` | `Transaction::is_coinbase` | S2 | match |
 | CB-002 | scriptSig length 2..=100 | structure walk `bad-cb-length` | `s9_coinbase_scriptsig_length_two_accepts_one_rejects` | match |
-| CB-003 | BIP34: minimal height push | `check_bip34_coinbase` | `s7_rejects_bip34_missing_at_height_1`; `bip34_tests` | match |
+| CB-003 | BIP34: minimal height push | `check_bip34_coinbase` | `s7_rejects_bip34_missing_after_activation_signet`; `bip34_tests` | match |
 | CB-004 | Before BIP34 the height push is not required | `bip34_active_at` guard | `s7_bip34_not_required_at_height_0` | match |
 | CB-005 | Duplicate coinbase txid while an output is unspent, except the two mainnet hashes | `ChainParams::is_bip30_repeat`, confirm BIP30 | `is_bip30_repeat_matches_core`; `buried_rules_and_a_lying_header_path`; `bip30_duplicate_coinbase_in_one_batch` | match |
 | CB-006 | Any other duplicate coinbase is rejected | same | `repeated_coinbase_chain_rejects_what_core_rejects` | match |
-| CB-007 | After BIP54, coinbase locktime is height−1 and sequence is not final | not implemented | — | absent |
+| CB-007 | After BIP54, coinbase locktime is height−1 and sequence is not final | `reject_bip54_coinbase` when `enforce_bip54` | `bip54_coinbase_vectors` | match |
 | CB-008 | Maturity 100 | connect maturity check | `coinbase_maturity_holds_inside_one_confirm_batch` | match |
 | CB-009 | Witness commitment when a witness is present | structure walk | `s8_coinbase_witness_without_commitment_is_missing`; `s8_rejects_empty_or_multi_item_coinbase_witness_reserved` | match |
 | CB-010 | Coinbase witness leaf is 32 zero bytes | commitment hash uses that leaf | `witness_commitment_script_honors_reserved`; `s8_accepts_witness_commitment_with_reserved_value` | match |
@@ -233,7 +233,7 @@ the named tests.
 | SC-006 | P2SH template is 23 bytes | `classify` | corpus | match |
 | SC-007 | CHECKSIG costs 1; CHECKMULTISIG costs n or the legacy 20 | `script_sigops` | `sigop_cost_tests` | match |
 | SC-008 | Coinbase contributes no P2SH sigops | sigop walk skips coinbase P2SH | `sigop_cost_tests` | match |
-| SC-009 | Witness v0 sigops count; taproot key-path counts 0 | `count_witness_sigops` path in the block walk | `witness_empty_p2wsh_and_v1_program_cost_zero`; `witness_p2wpkh_counts_one` | match |
+| SC-009 | Witness v0 sigops count; taproot key-path counts 0 | `witness_sigops_one` path in the block walk | `witness_empty_p2wsh_and_v1_program_cost_zero`; `witness_p2wpkh_counts_one` | match |
 | SC-010 | Tapscript sigops count `0xac`, `0xad`, `0xba` at opcode positions | tapscript sigop counter | `sigop_cost_tests` | match |
 | SC-011 | Null dummy after BIP147 | `null_dummy` flag from SegWit height | `witness_v0_nulldummy_follows_the_flag` | match |
 | SC-012 | Strict DER after BIP66 | `check_signature_encoding` | `p2wpkh_der_follows_bip66_flag_and_push_size`; corpus | match |
@@ -276,7 +276,7 @@ the named tests.
 | CTX-008 | Median is the upper middle of up to 11 timestamps | `median_time_past_times` | `median_time_past_tests` | match |
 | CTX-009 | Mempool requires absolute and relative finality at the tip | `is_final_tx`; mempool admit calls it | `accept.rs` `bip68_time_lock_uses_coin_create_mtp` | policy |
 | CTX-010 | Retarget span is 2,015 intervals, clamped to 1/4 .. 4× | `retarget_bits` | `retarget_clamps_timespan_and_caps_at_pow_limit` | match |
-| CTX-011 | BIP94: first block of a period has time ≥ parent − 600 | `check_timewarp` when `enforce_bip94` | header BIP94 tests | match |
+| CTX-011 | BIP94: first block of a period has time ≥ parent − 600 | `check_period_times` when `enforce_bip94` | header BIP94 tests | match |
 | CTX-012 | Money math uses checked add/sub | Output sums reject above `MAX_MONEY` before connect. Internal fee adds are not a separate checked-arithmetic proof | S10 | implied |
 | CTX-013 | A relative lock whose prevout is missing fails before outputs are recorded | unresolved coin age fails closed | `bip68_unresolved_coin_age_fails_closed` | match |
 
@@ -383,7 +383,7 @@ Production is `script/p2tr.rs` and the tapscript arm of
 | REORG-002 | Work is the sum of expanded targets | `Header::work()` (inverse of target) | `chain_work_sums_distinct_header_bits` | differs |
 | REORG-003 | Undo inverts connect. A missing spent coin is an error | chain disconnect | `disconnect_fails_when_a_connected_height_has_no_block` | match |
 | REORG-004 | Disconnect to the fork, then connect forward | most-work reorg | `most_work_reorg_depth16_and_invalid_mid_branch_restores_tip` | match |
-| SIG-001 | Signet commitment must satisfy the challenge | `signet::check_signet_block_solution` | `signet_block_1_rejects_mutated_solution`; `signet_challenge_p2wpkh_empty_witness_rejected` | match |
+| SIG-001 | Signet commitment must satisfy the challenge | `signet::validate_signet_block_solution` | `signet_block_1_rejects_mutated_solution`; `signet_challenge_p2wpkh_empty_witness_rejected` | match |
 
 ### 16–17. Properties
 

@@ -56,7 +56,9 @@ info:
     - Accepted only on the routes that declare the `asof` parameter below:
       `/tx/{txid}/status`, `/tx/{txid}/outspend/{vout}`, `/tx/{txid}/outspends`,
       and address/scripthash `/`, `/utxo`, `/txs`, `/txs/chain[/{last}]`,
-      `/txs/summary[/{last}]`, plus the unix-socket `/internal/address/{address}`
+      `/txs/summary[/{last}]`, the output-by-position routes
+      (`/block-height/{height}/tx/{index}[/out/{vout}]`, `/tx/{txid}/out/{vout}`,
+      `POST /block-heights/txs/outs`), plus the unix-socket `/internal/address/{address}`
       and `/internal/scripthash/{scripthash}` and their `/history`.
     - On any other route, `?asof=` is **404** (for example `/tx/{txid}`,
       `/mempool`, `/address/{addr}/txs/mempool`, and the POST multi-script routes).
@@ -143,6 +145,72 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/StampedPlainHash" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /block-height/{height}/tx/{index}:
+    get:
+      tags: [transactions]
+      summary: Confirmed transaction JSON by block position
+      description: Same body as `GET /tx/{txid}` for that confirmed tx. A missing height or index is 404; a non-integer segment is 400. No `--sh-index`.
+      parameters:
+        - { name: height, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: index, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { $ref: "#/components/parameters/AsOf" }
+      responses:
+        "200":
+          description: Transaction
+          headers: { X-Bitcoin-Chain-Tip: { $ref: "#/components/headers/ChainTip" }, X-Bitcoin-Chain-Tip-Height: { $ref: "#/components/headers/ChainTipHeight" }, X-Powered-By: { $ref: "#/components/headers/PoweredBy" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Transaction" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AsOfNotFound" }
+  /block-height/{height}/tx/{index}/out/{vout}:
+    get:
+      tags: [transactions]
+      summary: One confirmed output by block position
+      description: "`spent: true` is still 200 with the script and value. A mempool spend stays `spent: false`. Genesis coinbase outputs, a header with no body, and a missing vout are 404. No `--sh-index`."
+      parameters:
+        - { name: height, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: index, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: vout, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { $ref: "#/components/parameters/AsOf" }
+      responses:
+        "200":
+          description: Output
+          headers: { X-Bitcoin-Chain-Tip: { $ref: "#/components/headers/ChainTip" }, X-Bitcoin-Chain-Tip-Height: { $ref: "#/components/headers/ChainTipHeight" }, X-Powered-By: { $ref: "#/components/headers/PoweredBy" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TxOut" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AsOfNotFound" }
+  /block-heights/txs/outs:
+    post:
+      tags: [transactions]
+      summary: Confirmed outputs for several block positions
+      description: |
+        Body `[[height, index, vout], …]`; one slot per element, same order,
+        duplicates kept, JSON `null` where the GET would be 404. One bad element
+        is 400 for the whole body. More than 300 is 422 `body too long`. `[]` is
+        200 `[]`. No `--sh-index`.
+      parameters: [{ $ref: "#/components/parameters/AsOf" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: array, maxItems: 300, items: { type: array, minItems: 3, maxItems: 3, items: { type: integer, minimum: 0 } } }
+      responses:
+        "200":
+          description: One output or null per element
+          headers: { X-Bitcoin-Chain-Tip: { $ref: "#/components/headers/ChainTip" }, X-Bitcoin-Chain-Tip-Height: { $ref: "#/components/headers/ChainTipHeight" }, X-Powered-By: { $ref: "#/components/headers/PoweredBy" } }
+          content:
+            application/json:
+              schema: { type: array, items: { oneOf: [{ $ref: "#/components/schemas/TxOut" }, { type: "null" }] } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AsOfNotFound" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422":
+          description: More than 300 elements (`body too long`)
+          headers: { X-Powered-By: { $ref: "#/components/headers/PoweredBy" } }
+          content: { text/plain: { schema: { type: string } } }
   /block/{hash}:
     get:
       tags: [blocks]
@@ -389,6 +457,23 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Outspend" } }
+        "404": { $ref: "#/components/responses/AsOfNotFound" }
+  /tx/{txid}/out/{vout}:
+    get:
+      tags: [transactions]
+      summary: One confirmed output by txid
+      description: Same body as `/block-height/{height}/tx/{index}/out/{vout}`. A mempool-only tx is 404.
+      parameters:
+        - { $ref: "#/components/parameters/Txid" }
+        - { name: vout, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { $ref: "#/components/parameters/AsOf" }
+      responses:
+        "200":
+          description: Output
+          headers: { X-Bitcoin-Chain-Tip: { $ref: "#/components/headers/ChainTip" }, X-Bitcoin-Chain-Tip-Height: { $ref: "#/components/headers/ChainTipHeight" }, X-Powered-By: { $ref: "#/components/headers/PoweredBy" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TxOut" }
         "404": { $ref: "#/components/responses/AsOfNotFound" }
   /txs/outspends:
     get:
@@ -841,7 +926,7 @@ paths:
   /txs/package:
     post:
       tags: [broadcast]
-      summary: Submit a package (same path as RPC `submitpackage`)
+      summary: Submit a package (atomic `accept_package`, not the RPC `submitpackage` path)
       requestBody:
         required: true
         content:
@@ -1227,6 +1312,15 @@ components:
           enum: [p2pkh, p2sh, p2pk, v0_p2wpkh, v0_p2wsh, v1_p2tr, op_return, multisig, unknown]
         scriptpubkey_address: { type: string }
         value: { type: integer, description: sats }
+    TxOut:
+      description: One confirmed output. `status` is the creating transaction's.
+      allOf:
+        - { $ref: "#/components/schemas/Vout" }
+        - type: object
+          required: [spent, status]
+          properties:
+            spent: { type: boolean }
+            status: { $ref: "#/components/schemas/TxStatus" }
     Vin:
       type: object
       required: [txid, vout, is_coinbase]

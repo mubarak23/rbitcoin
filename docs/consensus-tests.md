@@ -98,7 +98,7 @@ header version/time, `finality_tests`, `sigop_cost_tests`,
 | S4 | Weight ≤ 4_000_000 WU | `BadBlock("…weight…")` | `s4_rejects_overweight_block`, `s4_weight_4_000_000_accepts_4_000_001_rejects` |
 | S5 | Unique txids | `BadBlock("duplicate txid")` (`bad-txns-inputs-missingorspent`, as Core rejects the second copy at connect) | `structure_rule_tests::s5_rejects_duplicate_txid`; tip cache `chain::tests::hostile_peer_session` |
 | S6 | Merkle root matches txids, checked before every other body rule; a repeated tail (CVE-2012-2459) is mutated | `BadBlock("merkle root mismatch")`, `BadBlock("bad-txns-duplicate")`; RPC `bad-txnmrklroot` | `structure_rule_tests::s6_rejects_merkle_root_mismatch`, `body_rules_run_after_the_header_merkle_check` (+ `merkle_root_bytes_single_and_odd`; store `merkle_mutation_flags_a_repeated_tail_at_any_level`; RPC `rpc_regtest_from_genesis`) |
-| S7 | BIP34 height in coinbase (h≥1) | `BadBlock("bip34…")` | `s7_rejects_bip34_missing_at_height_1`, `s7_bip34_not_required_at_height_0`, `s7_regtest_rejects_bip34_missing_at_height_1`, `s7_regtest_bip34_activation_height_override` |
+| S7 | BIP34 height in coinbase (h≥1) | `BadBlock("bip34…")` | `s7_rejects_bip34_missing_after_activation_signet`, `s7_bip34_not_required_at_height_0`, `s7_regtest_rejects_bip34_missing_at_height_1`, `s7_regtest_bip34_activation_height_override` |
 | S8 | Witness commitment when any witness; the last output of at least 38 bytes starting `6a24aa21a9ed` is the commitment; a commitment needs a nonce of exactly 32 bytes; reject witness before SegWit activation | missing / mismatch / `bad-witness-nonce-size` / `BadBlock("unexpected witness before segwit")` | `rpc_regtest_from_genesis` (`missing witness commitment`, `witness commitment mismatch`); `s8_last_witness_commitment_output_wins` (last ≥38-byte output; a 37-byte trailer does not count); `s8_coinbase_witness_without_commitment_is_missing` (coinbase witness alone); `s8_accepts_witness_commitment_with_reserved_value` and `s8_rejects_empty_or_multi_item_coinbase_witness_reserved` (empty and multi-item nonce); `s8_rejects_nonce_lengths_beside_32` (31 and 33 bytes); `s8_mainnet_accepts_pre_segwit_commitment_magic_without_nonce` (pre-segwit `aa21a9ed` is data); `consensus_rules::header_and_spending_boundaries` (connect-path `unexpected witness before segwit`) |
 | S9 | Coinbase scriptSig length 2..=100, after the merkle check | `bad-cb-length` | `s9_coinbase_scriptsig_length_two_accepts_one_rejects` (length 2 accepts; length 1 is `bad-cb-length` even when the byte is the BIP34 push); `rpc_regtest_from_genesis` (under 2 and 101 reject; a padded height push and 100 bytes connect); `short_coinbase_under_a_real_header_is_merkle_mismatch` |
 | S10 | Output value / sum ≤ MAX_MONEY | `toolarge` | `rpc_regtest_from_genesis` submit (`bad-txns-vout-toolarge` above MAX_MONEY; MAX_MONEY is `bad-cb-amount`; two under-max outputs sum to `bad-txns-txouttotal-toolarge`) |
@@ -128,8 +128,8 @@ The Test column is the witness. Do not copy it into [`TESTING.md`](../TESTING.md
 | H10 | Testnet min-difficulty after 20 min | `expected_next_bits` = powLimit | `testnet_min_difficulty_after_20_minute_gap` |
 
 Location: `crates/rbitcoin-test/tests/consensus_rules.rs` (connect-path header
-walks) and `crates/rbitcoin-consensus/src/header.rs` (`median_time_past_tests`:
-version floors and exact +2h).
+walks) and `crates/rbitcoin-consensus/tests/header/median_time_past_tests.rs`
+(version floors and exact +2h).
 
 ## C. Connect — `accept_and_connect_block` / `structural_validate_spends`
 

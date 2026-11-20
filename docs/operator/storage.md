@@ -181,13 +181,12 @@ schema before 22 refuses this datadir; wipe datadir and redo IBD
 ```
 
 A meta **22 or newer** datadir can still refuse leftover **index** layouts (fuse8 v1,
-flat `*.idx.meta`, Shared file `scripthash.body`, pack8 Paged mode 10). The
+flat `tx.head.meta`, Shared file `scripthash.body`, pack8 Paged mode 10). The
 line is one of:
 
 ```text
 index refuses fuse8 v1; wipe store/tx.head and store/scripthash* then restart (Class A kept; tx.head rebuilds, SH rematerializes with --sh-index)
 index refuses flat tx.head.meta; wipe store/tx.head then restart (Class A kept; tx.head rebuilds)
-index refuses flat *.idx.meta; place files under store/{stem}.idx/ (meta + NNNNNN segments) then restart (Class A kept)
 index refuses Shared (file) scripthash.body; wipe store/scripthash* then restart (Class A kept; SH rematerializes with --sh-index)
 index refuses pack8 Paged (mode 10) scripthash heads; wipe store/scripthash* then restart (Class A kept; SH rematerializes with --sh-index)
 ```
@@ -208,7 +207,7 @@ Class C. Restart the same binary: `tx.head` rebuilds from Class A; with
 
 **Kill-9 / crash is not a schema upgrade.** Open follows
 [`docs/crash-recovery.md`](../crash-recovery.md) (tip-as-commit, Class C
-repair above tip). Prefer SIGTERM ([Resume / clean stop](#resume--clean-stop)).
+repair above tip). Prefer SIGTERM ([`mainnet.md` catch-up](mainnet.md#catch-up)).
 A corrupt file still means wipe/reindex — not an in-process repair.
 
 ## Scripthash index (`--sh-index`)

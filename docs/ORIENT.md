@@ -24,7 +24,7 @@ Before the first edit in a crate, read `crates/<name>/AGENTS.md` when that file 
 | Which head file (tx / header / scripthash) | [`heads.md`](./heads.md) |
 | Crash, tip-as-commit, kill-9 | [`crash-recovery.md`](./crash-recovery.md) |
 | Tests, budgets, coverage, fixtures | [`../TESTING.md`](../TESTING.md) |
-| A missed cargo-mutants case | [`../TESTING.md`](../TESTING.md) (Mutation testing). The miss list is `missed.txt` on the `mutants-state` branch |
+| A missed cargo-mutants case | [`../TESTING.md`](../TESTING.md) (What a mutant kill looks like). The miss list is `missed.txt` on the `mutants-state` branch |
 | Kill missed mutants since the last kill | [`../.agents/skills/kill-nightly-mutants/SKILL.md`](../.agents/skills/kill-nightly-mutants/SKILL.md) |
 | Multi-step plan (Red → Green → Refactor) | [`how-we-plan.md`](./how-we-plan.md#agent-contract) (stop before Rationale) |
 | cargo / clippy / deny / rustc logs (do not load into the session) | [`how-we-plan.md`](./how-we-plan.md) (Agent RAM) |

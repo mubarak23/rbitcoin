@@ -205,5 +205,5 @@ construction, or witness nonces.
 
 - Mempool admission correctness: findings [010](./external_findings/010-mempool-confirmed-spentness.md),
   [011](./external_findings/011-mempool-structural-chain-context.md)
-- Policy: `rbitcoin-consensus::policy`, OPERATOR Libre table
+- Policy: `rbitcoin-consensus::policy`, [`operator/operations.md`](./operator/operations.md#libre-relay-class-policy-mempool--electrum-broadcast) Libre table
 - Accept path: staged prepare / script_pool / commit; coalesced durable writes

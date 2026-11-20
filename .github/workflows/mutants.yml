@@ -6,7 +6,7 @@
 # second job resumes the cursor and does not open another new window. The cursor and
 # MISSED lines live on the mutants-state branch, which outlives the
 # 14-day artifact. MISSED is not a failure. A failed push of that branch
-# fails the run. Owner: TESTING.md (Mutation testing).
+# fails the run. Owner: TESTING.md (What a mutant kill looks like).
 #
 # 00:47 UTC is 17:47 Pacific during PDT and 16:47 during PST. Minute 47
 # avoids the top-of-hour schedule queue. Three hours earlier than the

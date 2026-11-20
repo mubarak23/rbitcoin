@@ -164,7 +164,8 @@ group-readable `/run/tor/control.authcookie`. An explicit `tor.control` is
 left to the operator's daemon. `rpc.unixSocket` passes `--rpc`
 for `{dataDir}/rpc.sock` without TCP. `extraArgs` remains for `--conf`,
 test knobs (`--smoke`, `--mock-time`, `--max-run-secs`,
-`--test-activation-height`, `--regtest-pow-bits`), and the two secrets that
+`--test-activation-height`, `--regtest-pow-bits`, `--regtest-block-time`,
+`--regtest-retarget-interval`), and the two secrets that
 stay off the unit (`--tor-control-password`, `--sv2-tp-authority-sec`; use
 `tor.controlCookie` and `sv2.tp.authoritySecretFile`). `extraArgs` is
 appended last.

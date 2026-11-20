@@ -1,6 +1,6 @@
 # rbitcoin-query
 
-Confirm and query layer over `rbitcoin-store`. Consensus, net, RPC, Electrum,
+Confirm and query layer over `rbitcoin-store`. IBD, net, RPC, Electrum,
 and Esplora call this crate. They do not talk to store tables directly when
 a query API already owns the fact.
 

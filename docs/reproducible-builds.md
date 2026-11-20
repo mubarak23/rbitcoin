@@ -217,9 +217,9 @@ Only needed if you intentionally want a dynamic glibc link for store-native
 Nix environments. **Not** portable off the Nix store; not the operator default.
 
 ```bash
-nix build .#rbitcoin
+nix build .#rbitcoin-glibc
 ./scripts/repro-build.sh glibc
-# or: nix-build -A rbitcoin
+# or: nix-build -A rbitcoin-glibc
 ```
 
 **Bit-identity with the musl build is not expected**; only same-target digests

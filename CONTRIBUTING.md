@@ -129,8 +129,8 @@ Not needed to compile or `--smoke`. CI installs prebuilts; locally:
 
 | Tool | Local | Job |
 |------|-------|-----|
-| **cargo-deny** | `cargo install cargo-deny --locked` then `cargo deny check` | `deny` |
-| **ast-grep** | [ast-grep.github.io](https://ast-grep.github.io) (or Nix) then `./scripts/ast-grep.sh` | `ast-grep` |
+| **cargo-deny** | `cargo install cargo-deny --locked` then `cargo deny check` | `qc` |
+| **ast-grep** | [ast-grep.github.io](https://ast-grep.github.io) (or Nix) then `./scripts/ast-grep.sh` | `qc` |
 | **cargo-llvm-cov** | `cargo install cargo-llvm-cov --locked` + `rustup component add llvm-tools-preview` then `./scripts/coverage.sh` | `coverage` |
 
 ### Optional Nix (Linux / macOS)

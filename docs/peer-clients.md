@@ -71,7 +71,7 @@ Script-mutating vs Core `submitblock` (`script_differential`) is landed
 (fuzzer bytes run as scriptPubKey; JSON corpora stay static). Compact reorg
 via child-first `drain_pending` vs Core (`cmpct_reorg_differential`) is
 landed. N-block reorg (`block_reorg_n_differential`) and BIP68 CSV-age
-(`block_csv_differential`) are in-tree; nightly jobs wait on `fuzz.yml`.
+(`block_csv_differential`) are in-tree and run in the nightly `fuzz.yml`.
 **Q-30** is Completed. Live Core HB `cmpctblock` announce is not a
 leftover Open row. Fuzzamoto 001–023 stay as they were.
 

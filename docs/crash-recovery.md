@@ -73,7 +73,7 @@ Open revalidation runs in `Query::open_or_create` **before** P2P can extend tip.
 
 ## Thin scripthash (Electrum outpoint pointers)
 
-- Schema 18: the head value holds **one** inline create (`SH_INLINE_CAP`), a geometric **slab** (3–256 fks, ULEB128
+- Schema 18: the head value holds **one** inline create (`SH_INLINE_CAP`), a geometric **slab** (2–256 fks, ULEB128
   deltas), or a megakey **page chain** (≥257). Size-class freelist reuses freed slabs.
   Main heads are sealed MPHF+pack8 (no fuse); new keys go to global ingest OA.
 - **No spend columns** — spentness is the `spent.body` annotation plus `is_confirmed_strong`.

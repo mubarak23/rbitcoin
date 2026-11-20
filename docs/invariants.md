@@ -17,7 +17,7 @@ with `Err(…Corrupt("invariant: …"))` (and `debug_assert!` where useful). Do
 | **Load miss** | Spend annotate without `spent_range` abs; body decode without idx range; pin without outs for need_vouts; ensure without abs for a spend edge | Assert / hard Err; fix lookup/load |
 | **Environment** | bulk IO backend uring vs pread/pwrite (single backend trait) | Keep modality only |
 | **Protocol** | BIP30 multi-spender confirmed-strong walk; same-block spends; coinbase null create | Real branches (not soft recovery) |
-| **Format migrate** | Occupied 22 rewrites `create.loc.ovf` 12 B→16 B; occupied 24/25 strips `header.body` 96 B→88 B (an 88 B body stays 88 B); occupied 24 zero-extends `txstat.body`; `meta` to live `SCHEMA_VERSION`. Leftover fuse8 v1 / flat idx / Shared SH body / Paged pack8 **refuse** | Soft migrate (tmp+rename) or explicit wipe/rebuild |
+| **Format migrate** | Occupied 22 rewrites `create.loc.ovf` 12 B→16 B; occupied 24/25 strips `header.body` 96 B→88 B (an 88 B body stays 88 B); occupied 24 zero-extends `txstat.body`; `meta` to live `SCHEMA_VERSION`. Leftover fuse8 v1 / Shared SH body / Paged pack8 **refuse** | Soft migrate (tmp+rename) or explicit wipe/rebuild |
 | **API / product** | RPC body from store; Electrum mempool after chain; compact → getdata | Keep |
 
 **One path.** Do not reintroduce a silent colder alternate when lookup or load
@@ -132,7 +132,7 @@ repair (`scripts/repair-idx-double-append.py`) does not apply to schema 22.
 
 | Error | State | Root | Fix |
 |-------|-------|------|-----|
-| `lookup stage miss (load cold denserels forbidden)` | S0/S3 | Load Forbid + parents without plan range | Lookup always fills `external_parents` body; load outs by `txout` range only |
+| `lookup stage miss (load parent without body_range denserels)` | S0/S3 | Load Forbid + parents without plan range | Lookup always fills `external_parents` body; load outs by `txout` range only |
 | `invariant: confirm batch mixed archived` | S3 | One stamp/load list spans need-body and already-bodied | Split at the `has_body` change (IBD lookup) or call one-shot twice. Do not hitchhike `get_list` on `plan=Some` |
 | `put_full_batch fk mismatch` | S4 cascade | Tip-ahead plan after tip+1 reject | Soft requeue for fk mismatch / connect height not tip+1 |
 | `parent create_fk unresolved` | S2 | Skeleton / in-flight miss | **Engine fault** on a lone block. Requeue once, then halt IBD. Do not blacklist. Exception: a lone tip+1 block that a fresh TipOnly read still misses once `tx.head` holds every connected create is `ConsensusInvalid` (`missing prevout: parent … is not on the connected chain`, [089](./external_findings/089-missing-parent-verdict.md)). |
@@ -165,12 +165,10 @@ packs at/above the leaving **pack** height **before** the next bind.
 
 | Test | Entry |
 |------|--------|
-| `pin_for_wire_missing_parent_is_invariant_error` | `pin_for_wire_batch` missing spent parent |
+| `pin_and_ensure_journey` | `pin_for_wire_batch` missing spent parent; `post_commit` abs-only annotate; `ensure_spend_abs_layouts` post-condition |
 | `pin_for_wire_incomplete_outs_is_invariant_error` | `pin_for_wire_batch` incomplete outs → cold miss |
-| `post_commit_missing_denserels_is_invariant_error` | `post_commit` abs-only annotate |
-| `ensure_spend_abs_incomplete_is_invariant_error` | `ensure_spend_abs_layouts` post-condition |
 | `collect_spend_abs_after_fill_is_one_walk` | one `spend_abs_jobs` after fill; vout past the range is ensure Corrupt; duplicate abs is one job |
-| `write_ensure_stamps_spent_range_after_load_pin` / `pin_and_ensure_journey` / `fill_same_batch_abs_from_append_loc_ram` / `fill_just_written_survives_until_last_started_write` / `fill_stamp_spent_hole_from_write_tls` / `pin_and_ensure_from_pin_loc_without_tls` | load pin copies lookup spent range; missing stamp is Corrupt; same-batch abs from append RAM; just-written loc until write of last started height; stamp spent hole filled by write TLS; pin loc after TLS prune (no write loc pread) |
+| `pin_and_ensure_journey` / `fill_same_batch_abs_from_append_loc_ram` / `fill_just_written_survives_until_last_started_write` / `fill_stamp_spent_hole_from_write_tls` / `pin_and_ensure_from_pin_loc_without_tls` | load pin copies lookup spent range; missing stamp is Corrupt; same-batch abs from append RAM; just-written loc until write of last started height; stamp spent hole filled by write TLS; pin loc after TLS prune (no write loc pread) |
 | `fill_missing_parent_ranges_stamps_spent_idx_for_archived` / `inflight_hit_adopts_skeleton_loc` / `inflight_hit_skeleton_miss_leaves_spent_unset_despite_disk_loc` / `plan_inflight_skeleton_miss_leaves_spent_unset_despite_disk_loc` / `inflight_hit_uses_pin_loc_without_disk` | leftover TipOnly still loc-fills archived spent; InFlight takes skeleton loc; IBD skeleton miss leaves spent unset (no loc-by-fk); pin loc binds without disk |
 | `spend_abs_jobs_unique_and_missing_is_corrupt` | pin arithmetic abs list; missing → Corrupt |
 | `already_archived_schema13_pin_identity_tip_follow` | archive then `confirm_wire_run` plan=None + rapid tip accept |
