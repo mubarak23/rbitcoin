@@ -491,3 +491,24 @@ fn hygiene_drops_below_the_queue_and_keeps_the_indexed_walk() {
         "a slot above the walk tip is not indexed"
     );
 }
+
+/// The work maps' heap is metered from their capacity: the header maps
+/// grown to hold every header of a walk count once they hold them.
+#[test]
+fn structure_sizes_meter_the_work_maps() {
+    use bitcoin::hashes::Hash;
+    use rbitcoin_primitives::heap_bytes::hash_table_bytes;
+    let mut st = rbitcoin_ibd::ibd::state::IbdWorkState::new(Vec::new(), None, None);
+    let empty = st.structure_sizes().map_bytes;
+    for i in 0..10_000u32 {
+        let mut b = [0u8; 32];
+        b[..4].copy_from_slice(&i.to_le_bytes());
+        let h = bitcoin::BlockHash::from_byte_array(b);
+        st.known_headers.insert(h);
+        st.hash_height.insert(h, i);
+    }
+    let grown = st.structure_sizes().map_bytes;
+    let maps = hash_table_bytes::<bitcoin::BlockHash, ()>(st.known_headers.capacity())
+        + hash_table_bytes::<bitcoin::BlockHash, u32>(st.hash_height.capacity());
+    assert!(grown - empty >= maps, "{grown} - {empty} < {maps}");
+}

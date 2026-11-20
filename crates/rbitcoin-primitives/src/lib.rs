@@ -8,6 +8,8 @@ pub mod array_le;
 #[doc(hidden)]
 pub mod compact;
 #[doc(hidden)]
+pub mod heap_bytes;
+#[doc(hidden)]
 pub mod hex;
 #[doc(hidden)]
 pub mod loc_simd;

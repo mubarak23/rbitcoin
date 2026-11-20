@@ -221,6 +221,44 @@ fn owned_sizes_json_omits_prep_ahead_inflight() {
     assert!(obj.contains_key("wloc_packs"), "{obj:?}");
 }
 
+/// The heap meters print under `owned.heap`, one byte count each.
+#[test]
+fn owned_sizes_json_prints_the_heap_meters() {
+    #[derive(serde::Serialize)]
+    struct Wrap {
+        #[serde(serialize_with = "ser_process_owned")]
+        owned: ProcessOwnedSizes,
+    }
+    let heap = rbitcoin_query::HeapMeters {
+        pin_est: 1,
+        pin_maps: 2,
+        decoded_blocks: 3,
+        decoded: 4,
+        spend_notes: 5,
+        spend_dir: 6,
+        conf_plans: 7,
+    };
+    let v = serde_json::to_value(Wrap {
+        owned: ProcessOwnedSizes {
+            heap,
+            ..ProcessOwnedSizes::default()
+        },
+    })
+    .unwrap();
+    assert_eq!(
+        v["owned"]["heap"],
+        serde_json::json!({
+            "pin_est": 1,
+            "pin_maps": 2,
+            "decoded_blocks": 3,
+            "decoded": 4,
+            "spend_notes": 5,
+            "spend_dir": 6,
+            "conf_plans": 7
+        })
+    );
+}
+
 #[test]
 fn tip_perf_json_is_timestamped() {
     let line = tip_perf_json(&TipPerfLog {

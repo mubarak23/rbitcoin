@@ -1,5 +1,6 @@
 mod array_le;
 mod compact;
+mod heap_bytes;
 mod hex;
 mod loc_simd;
 mod median_time;

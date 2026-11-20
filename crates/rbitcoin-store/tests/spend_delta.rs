@@ -836,6 +836,18 @@ fn a_tip_window_keeps_a_small_map() {
     }
 }
 
+/// The page directory is spend-delta RAM too: its bytes follow the
+/// highest page a generation names, eight bytes a page.
+#[test]
+fn stats_meter_the_page_directory() {
+    let d = dir();
+    let log = SpendPageLog::create(&d).unwrap();
+    log.note_slots(&[(1000 * 4096 + 16, [1u8; 8])]).unwrap();
+    commit(&log, 1, 0, |_| Ok(true));
+    let bytes = log.stats().directory_bytes;
+    assert!((1001 * 8..4 * 1001 * 8).contains(&bytes), "{bytes}");
+}
+
 /// Across two checkpoints that fail after their freeze, the newest note for
 /// a slot wins in every layer: a frozen note over the sealed one while the
 /// checkpoint runs and after it merges them, an open note over both. After

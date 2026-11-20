@@ -237,6 +237,13 @@ impl BodyPresence {
         }
     }
 
+    /// Heap the slot map and the pending set hold at their `capacity()`.
+    pub fn heap_bytes(&self) -> u64 {
+        use rbitcoin_primitives::heap_bytes::hash_table_bytes;
+        hash_table_bytes::<BlockHash, Slot>(self.slots.capacity())
+            + hash_table_bytes::<BlockHash, ()>(self.pending_keys.capacity())
+    }
+
     pub fn is_pending(&self, h: &BlockHash) -> bool {
         self.is_pending_hash(h)
     }

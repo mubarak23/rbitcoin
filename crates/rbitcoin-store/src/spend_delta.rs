@@ -227,6 +227,9 @@ pub struct SpendDeltaStats {
     pub live_bytes: u64,
     /// RAM the open, frozen and sealed notes allocate.
     pub notes_bytes: u64,
+    /// RAM the page directory allocates: one entry per `spent.body` page up
+    /// to the highest page a generation names.
+    pub directory_bytes: u64,
 }
 
 impl SpendDeltaStats {
@@ -369,11 +372,7 @@ fn open_notes_after(recent: usize) -> OpenNotes {
 
 /// What an [`OpenNotes`] allocates: its buckets and their control bytes.
 fn open_notes_bytes(m: &OpenNotes) -> u64 {
-    if m.capacity() == 0 {
-        return 0;
-    }
-    let buckets = (m.capacity() * 8 / 7).next_power_of_two() as u64;
-    buckets * (std::mem::size_of::<(u64, Slot)>() as u64 + 1) + 16
+    rbitcoin_primitives::heap_bytes::hash_table_bytes::<u64, Slot>(m.capacity())
 }
 
 /// One multiply and a fold. Slot indexes sit far below 2^57, so an identity
@@ -1423,6 +1422,7 @@ impl Inner {
             segment_bytes: self.segs.values().map(|s| s.size).sum(),
             live_bytes: self.segs.values().map(|s| s.live_bytes).sum(),
             notes_bytes: self.notes_bytes(),
+            directory_bytes: rbitcoin_primitives::heap_bytes::vec_bytes(&self.directory),
         }
     }
 

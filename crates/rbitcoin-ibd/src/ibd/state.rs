@@ -36,6 +36,10 @@ pub struct WorkStructureSizes {
     pub peer_inflight: usize,
     pub addr_cooldown: usize,
     pub body: BodyPresenceSizes,
+    /// Heap of the work maps, deques and body presence, from their
+    /// `capacity()`. A lower bound: a hash map that removed keeps buckets
+    /// `capacity()` no longer counts.
+    pub map_bytes: u64,
 }
 
 /// One peer that has been sent getdata for this hash.
@@ -520,7 +524,29 @@ impl IbdWorkState {
             peer_inflight,
             addr_cooldown: self.addr_cooldown.len(),
             body: self.body.size_snapshot(),
+            map_bytes: self.map_bytes(),
         }
+    }
+
+    /// Heap the work-path maps hold at their `capacity()`.
+    fn map_bytes(&self) -> u64 {
+        use rbitcoin_primitives::heap_bytes::hash_table_bytes;
+        let peers: u64 = self
+            .slots
+            .iter()
+            .map(|s| hash_table_bytes::<BlockHash, ()>(s.in_flight.capacity()))
+            .sum();
+        peers
+            + hash_table_bytes::<BlockHash, InflightReq>(self.inflight.capacity())
+            + (self.ordered.capacity() * std::mem::size_of::<BlockHash>()) as u64
+            + hash_table_bytes::<BlockHash, ()>(self.ordered_set.capacity())
+            + hash_table_bytes::<BlockHash, u32>(self.hash_height.capacity())
+            + self.height_to_hash.heap_bytes()
+            + hash_table_bytes::<BlockHash, BlockHash>(self.path_prev.capacity())
+            + hash_table_bytes::<BlockHash, ()>(self.known_headers.capacity())
+            + self.body.heap_bytes()
+            + hash_table_bytes::<BlockHash, Fk>(self.header_fks.capacity())
+            + hash_table_bytes::<NetAddr, Instant>(self.addr_cooldown.capacity())
     }
 
     /// True when `ordered` has piled up ghost entries (completed hashes left
@@ -647,6 +673,13 @@ pub struct HeightIndex {
 /// build a [`HashMap`].
 pub trait HeightOccupants {
     fn occupant(&self, height: u32) -> Option<BlockHash>;
+}
+
+impl HeightIndex {
+    /// Heap the slot window holds at its capacity.
+    pub fn heap_bytes(&self) -> u64 {
+        rbitcoin_primitives::heap_bytes::vec_bytes(&self.slots)
+    }
 }
 
 impl HeightOccupants for HeightIndex {

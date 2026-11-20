@@ -1210,7 +1210,17 @@ pub fn ser_process_owned<S: serde::Serializer>(
 ) -> Result<S::Ok, S::Error> {
     use serde::Serialize;
     let h = &o.head;
+    let m = &o.heap;
     serde_json::json!({
+        "heap": {
+            "pin_est": m.pin_est,
+            "pin_maps": m.pin_maps,
+            "decoded_blocks": m.decoded_blocks,
+            "decoded": m.decoded,
+            "spend_notes": m.spend_notes,
+            "spend_dir": m.spend_dir,
+            "conf_plans": m.conf_plans
+        },
         "conf_plans": o.conf_plans,
         "sh_runs": o.sh_runs,
         "h2h_keys": o.h2h_keys,

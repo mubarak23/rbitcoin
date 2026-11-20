@@ -108,3 +108,33 @@ fn put_header_plan_replaces_stale_hash_reverse() {
     assert!(c.get_header_by_hash(&[2u8; 32]).is_some());
     assert_eq!(c.header_plan_count(), 1);
 }
+
+/// The plans' heap follows the plans: each holds its tx fk list, a replace
+/// gives back the plan it replaces, and tip GC gives back what it drops,
+/// leaving only the maps' capacity.
+#[test]
+fn header_plan_bytes_follow_put_replace_and_tip_gc() {
+    let c = ConfirmParentCache::new();
+    c.advance_tip(0);
+    let fks: Vec<Fk> = (0..1_000).map(Fk).collect();
+    for h in 1..=100u32 {
+        let mut hash = [0u8; 32];
+        hash[..4].copy_from_slice(&h.to_le_bytes());
+        c.put_header_plan(
+            h,
+            Fk(u64::from(h)),
+            header_rec(hash),
+            fks.clone(),
+            [0u8; 32],
+        );
+    }
+    let lists = 100 * 1_000 * std::mem::size_of::<Fk>() as u64;
+    let full = c.header_plan_bytes();
+    assert!(full >= lists, "{full} < {lists}");
+    c.put_header_plan(1, Fk(1), header_rec([0xee; 32]), vec![Fk(7)], [0u8; 32]);
+    let replaced = c.header_plan_bytes();
+    assert!(full - replaced >= 999 * 8, "{full} -> {replaced}");
+    c.advance_tip(100);
+    let gc = c.header_plan_bytes();
+    assert!(gc < lists / 10, "{gc}");
+}

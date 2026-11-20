@@ -317,14 +317,13 @@ pub fn confirm_bq_resolve_wave_capped(
             wires.push((
                 h,
                 hash,
-                ResolvedWire {
-                    block: Arc::clone(&block),
-                    pres: Arc::clone(&pres),
-                    n_inputs: n_inputs_at.get(&h).copied().unwrap_or(0),
-                    header_fk: header_fk_at.get(&h).copied().unwrap_or(0),
-                    spend_keys: Arc::from([]),
-                    sender: sender_at.get(&h).copied(),
-                },
+                ResolvedWire::stamped(
+                    Arc::clone(&block),
+                    Arc::clone(&pres),
+                    n_inputs_at.get(&h).copied().unwrap_or(0),
+                    header_fk_at.get(&h).copied().unwrap_or(0),
+                    sender_at.get(&h).copied(),
+                ),
             ));
             (block, pres)
         } else {

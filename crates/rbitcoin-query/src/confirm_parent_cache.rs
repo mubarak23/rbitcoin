@@ -34,6 +34,25 @@ pub struct Inner {
     pub headers: U32Map<Arc<HeaderPlanCache>>,
     /// hash → height for O(1) header resolve on confirm.
     pub hash_to_height: HashMap<[u8; 32], u32>,
+    /// Heap of the plans in `headers`: each plan and its tx fk list.
+    plan_bytes: u64,
+    /// Highest `capacity()` of `headers` and `hash_to_height` after an
+    /// insert. Tip GC removes, which `capacity()` stops counting, while the
+    /// buckets stay.
+    cap_hwm: (usize, usize),
+}
+
+impl Inner {
+    fn note_caps(&mut self) {
+        self.cap_hwm.0 = self.cap_hwm.0.max(self.headers.capacity());
+        self.cap_hwm.1 = self.cap_hwm.1.max(self.hash_to_height.capacity());
+    }
+}
+
+/// Heap one plan holds: the plan and its tx fk list.
+fn plan_bytes(plan: &HeaderPlanCache) -> u64 {
+    (std::mem::size_of::<HeaderPlanCache>() + plan.tx_fks.capacity() * std::mem::size_of::<Fk>())
+        as u64
 }
 
 /// Process-local confirm parent cache (header plans).
@@ -57,6 +76,8 @@ impl ConfirmParentCache {
                 tip: 0,
                 headers: U32Map::default(),
                 hash_to_height: HashMap::new(),
+                plan_bytes: 0,
+                cap_hwm: (0, 0),
             }),
         }
     }
@@ -72,6 +93,7 @@ impl ConfirmParentCache {
         for h in drop_hdr {
             if let Some(plan) = g.headers.remove(&h) {
                 g.hash_to_height.remove(&plan.header_rec.hash);
+                g.plan_bytes = g.plan_bytes.saturating_sub(plan_bytes(&plan));
             }
         }
     }
@@ -102,15 +124,17 @@ impl ConfirmParentCache {
             g.hash_to_height.remove(&old_hash);
         }
         g.hash_to_height.insert(hash, height);
-        g.headers.insert(
-            height,
-            Arc::new(HeaderPlanCache {
-                header_fk,
-                header_rec,
-                tx_fks,
-                prev_hash,
-            }),
-        );
+        let plan = Arc::new(HeaderPlanCache {
+            header_fk,
+            header_rec,
+            tx_fks,
+            prev_hash,
+        });
+        g.plan_bytes += plan_bytes(&plan);
+        if let Some(old) = g.headers.insert(height, plan) {
+            g.plan_bytes = g.plan_bytes.saturating_sub(plan_bytes(&old));
+        }
+        g.note_caps();
     }
 
     pub fn get_header_by_hash(&self, hash: &[u8; 32]) -> Option<(Fk, HeaderRecord)> {
@@ -135,6 +159,16 @@ impl ConfirmParentCache {
     /// Number of cached header + tx_fks plans (IBD `conf_plans=` occupancy).
     pub fn header_plan_count(&self) -> usize {
         self.inner.lock().unwrap().headers.len()
+    }
+
+    /// Heap the cached plans and both maps hold. A plan a reader still holds
+    /// past tip GC is not counted.
+    pub fn header_plan_bytes(&self) -> u64 {
+        use rbitcoin_primitives::heap_bytes::hash_table_bytes;
+        let g = self.inner.lock().unwrap();
+        g.plan_bytes
+            + hash_table_bytes::<u32, Arc<HeaderPlanCache>>(g.cap_hwm.0)
+            + hash_table_bytes::<[u8; 32], u32>(g.cap_hwm.1)
     }
 }
 

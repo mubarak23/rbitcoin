@@ -274,18 +274,45 @@ pub struct ProcessOwnedSizes {
     pub wloc_packs: usize,
     pub wloc_pairs: usize,
     pub wloc_bytes: u64,
+    pub heap: HeapMeters,
+}
+
+/// Heap of IBD structures outside `accounted`, or charged there at less
+/// than they hold. Bytes, from capacity where a structure keeps it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HeapMeters {
+    /// The in-flight pin estimate the retain governor charges.
+    pub pin_est: u64,
+    /// The in-flight maps at capacity (txid map, out window, pack keys).
+    pub pin_maps: u64,
+    /// Decoded bodies alive in the confirm pipeline, and their heap.
+    pub decoded_blocks: u64,
+    pub decoded: u64,
+    /// Spend-delta open, frozen and sealed notes.
+    pub spend_notes: u64,
+    /// Spend-delta page directory.
+    pub spend_dir: u64,
+    /// Confirm header plans and their maps.
+    pub conf_plans: u64,
 }
 
 /// Plan-thread published heap meters for structures not owned by [`Query`].
 ///
-/// Write publishes loc packs from TLS after note/prune. Sampled by the ~5s
-/// IBD sizes line. Prep-ahead pins are not copied here.
+/// Write publishes loc packs from TLS after note/prune; load publishes the
+/// in-flight pins after each prune, disconnect drop and clear. Decoded
+/// bodies charge [`DECODED`] while they live. Sampled by the ~5s IBD perf
+/// line.
 pub mod process_mem_stats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static WLOC_PACKS: AtomicU64 = AtomicU64::new(0);
     static WLOC_PAIRS: AtomicU64 = AtomicU64::new(0);
     static WLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+    static PIN_EST: AtomicU64 = AtomicU64::new(0);
+    static PIN_MAPS: AtomicU64 = AtomicU64::new(0);
+
+    /// Decoded bodies (block + precompute rows) the confirm pipeline holds.
+    pub static DECODED: HeapGauge = HeapGauge::new();
 
     /// Write-thread loc window occupancy (TLS; no lock on Query).
     pub fn note_wloc(packs: usize, pairs: usize, bytes: u64) {
@@ -294,18 +321,105 @@ pub mod process_mem_stats {
         WLOC_BYTES.store(bytes, Ordering::Relaxed);
     }
 
+    /// Load-thread in-flight pins: the governor's estimate and the heap the
+    /// maps hold at capacity.
+    pub fn note_pins(est: u64, maps: u64) {
+        PIN_EST.store(est, Ordering::Relaxed);
+        PIN_MAPS.store(maps, Ordering::Relaxed);
+    }
+
+    /// Values that charge their bytes while they live, and how many.
+    #[derive(Debug)]
+    pub struct HeapGauge {
+        count: AtomicU64,
+        bytes: AtomicU64,
+    }
+
+    impl HeapGauge {
+        pub const fn new() -> Self {
+            Self {
+                count: AtomicU64::new(0),
+                bytes: AtomicU64::new(0),
+            }
+        }
+
+        /// `(count, bytes)` of the charges alive now.
+        pub fn load(&self) -> (u64, u64) {
+            (
+                self.count.load(Ordering::Relaxed),
+                self.bytes.load(Ordering::Relaxed),
+            )
+        }
+
+        fn add(&self, bytes: u64) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            self.bytes.fetch_add(bytes, Ordering::Relaxed);
+        }
+
+        fn sub(&self, bytes: u64) {
+            self.count.fetch_sub(1, Ordering::Relaxed);
+            self.bytes.fetch_sub(bytes, Ordering::Relaxed);
+        }
+    }
+
+    impl Default for HeapGauge {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    /// One value's charge on a [`HeapGauge`]: added on creation and on each
+    /// clone, given back on drop.
+    #[derive(Debug)]
+    pub struct HeapCharge {
+        gauge: &'static HeapGauge,
+        bytes: u64,
+    }
+
+    impl HeapCharge {
+        pub fn new(gauge: &'static HeapGauge, bytes: u64) -> Self {
+            gauge.add(bytes);
+            Self { gauge, bytes }
+        }
+
+        pub fn bytes(&self) -> u64 {
+            self.bytes
+        }
+    }
+
+    impl Clone for HeapCharge {
+        fn clone(&self) -> Self {
+            Self::new(self.gauge, self.bytes)
+        }
+    }
+
+    impl Drop for HeapCharge {
+        fn drop(&mut self) {
+            self.gauge.sub(self.bytes);
+        }
+    }
+
     #[derive(Clone, Copy, Debug, Default)]
     pub struct Snap {
         pub wloc_packs: usize,
         pub wloc_pairs: usize,
         pub wloc_bytes: u64,
+        pub pin_est: u64,
+        pub pin_maps: u64,
+        pub decoded_blocks: u64,
+        pub decoded: u64,
     }
 
     pub fn load() -> Snap {
+        let (decoded_blocks, decoded) = DECODED.load();
         Snap {
             wloc_packs: WLOC_PACKS.load(Ordering::Relaxed) as usize,
             wloc_pairs: WLOC_PAIRS.load(Ordering::Relaxed) as usize,
             wloc_bytes: WLOC_BYTES.load(Ordering::Relaxed),
+            pin_est: PIN_EST.load(Ordering::Relaxed),
+            pin_maps: PIN_MAPS.load(Ordering::Relaxed),
+            decoded_blocks,
+            decoded,
         }
     }
 }
@@ -2875,6 +2989,16 @@ impl Query {
             .mphf_g_bytes
             .saturating_add(self.store.scripthash.mphf_g_resident_bytes());
         head.mphf_occ_bytes = self.store.scripthash.mphf_occ_resident_bytes();
+        let spend = self.store.txs.spend_delta_stats();
+        let heap = HeapMeters {
+            pin_est: mem.pin_est,
+            pin_maps: mem.pin_maps,
+            decoded_blocks: mem.decoded_blocks,
+            decoded: mem.decoded,
+            spend_notes: spend.notes_bytes,
+            spend_dir: spend.directory_bytes,
+            conf_plans: self.confirm_parents.header_plan_bytes(),
+        };
         ProcessOwnedSizes {
             conf_plans,
             sh_runs: self.sh_run.on_disk_run_count(),
@@ -2885,6 +3009,7 @@ impl Query {
             wloc_packs: mem.wloc_packs,
             wloc_pairs: mem.wloc_pairs,
             wloc_bytes: mem.wloc_bytes,
+            heap,
         }
     }
 

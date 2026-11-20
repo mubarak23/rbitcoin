@@ -49,7 +49,15 @@ impl LoadAheadState {
     pub fn apply_disconnect(&mut self, hub: &ChainHub) {
         if let Some(h) = hub.query.take_disconnect(&mut self.disconnect_gen_seen) {
             self.in_flight.drop_from_height(h);
+            self.publish_pins();
         }
+    }
+
+    /// Publish the in-flight pins for the perf line: the governor's estimate
+    /// and the maps' heap at capacity.
+    fn publish_pins(&self) {
+        let (.., est) = self.in_flight.size_snapshot();
+        rbitcoin_query::process_mem_stats::note_pins(est, self.in_flight.map_bytes());
     }
 
     /// Drop packs below the lookup wave's drain+fence snapshot, after that
@@ -73,6 +81,7 @@ impl LoadAheadState {
         let extra = self.retain.observe(accounted, inflight_bytes, would_drop);
         self.in_flight
             .prune_below_height(inflight_prune_height(hi, extra));
+        self.publish_pins();
     }
 
     /// Advance create-fk HWM from published body; clear last_loaded once on tip.
@@ -163,6 +172,7 @@ impl LoadAheadState {
     #[doc(hidden)]
     pub fn clear_all(&mut self, hub: &ChainHub) {
         self.in_flight.clear();
+        self.publish_pins();
         self.last_loaded = None;
         self.next_tx_start = hub.query.tx_body_count().saturating_add(1).max(1);
     }

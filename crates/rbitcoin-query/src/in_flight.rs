@@ -188,6 +188,10 @@ pub struct InFlight {
     pub approx_bytes: u64,
     /// Lowest create id still in `outs`. Pin does not call [`Self::get_out`] below it.
     min_out: Option<u64>,
+    /// Highest `creates.capacity()` seen after an insert. The table never
+    /// shrinks, but a removed entry leaves a tombstone that `capacity()` stops
+    /// counting, so after a prune this, not `capacity()`, names its buckets.
+    creates_cap_hwm: usize,
 }
 
 /// Lowest id on `keys` that is still in `outs`.
@@ -270,6 +274,7 @@ impl InFlight {
         match self.creates.insert(txid, fk) {
             None => {
                 self.approx_bytes = self.approx_bytes.saturating_add(40);
+                self.creates_cap_hwm = self.creates_cap_hwm.max(self.creates.capacity());
             }
             Some(old) if old != fk => {
                 *self.evictions.entry(txid).or_insert(0) += 1;
@@ -401,6 +406,26 @@ impl InFlight {
     /// Occupancy for IBD `sizes`: height buckets, create-pin entries, approx bytes.
     pub fn size_snapshot(&self) -> (usize, usize, u64) {
         (self.pack_count(), self.outs.len(), self.approx_bytes)
+    }
+
+    /// Heap the maps hold at their capacity: the txid map, the eviction map,
+    /// the out window's slots and each pack's key lists. A prune leaves the
+    /// capacity they grew to. The pins' own bytes are the `approx_bytes`
+    /// estimate.
+    pub fn map_bytes(&self) -> u64 {
+        use rbitcoin_primitives::heap_bytes::{hash_table_bytes, vec_bytes};
+        let keys: u64 = self
+            .by_height
+            .values()
+            .chain(std::iter::once(&self.untagged))
+            .map(|k| vec_bytes(&k.txids) + vec_bytes(&k.out_ids))
+            .sum();
+        let pack_nodes = (self.by_height.len() * std::mem::size_of::<(u32, HeightKeys)>()) as u64;
+        hash_table_bytes::<[u8; 32], Fk>(self.creates_cap_hwm)
+            + hash_table_bytes::<[u8; 32], u32>(self.evictions.capacity())
+            + vec_bytes(&self.outs.slots)
+            + keys
+            + pack_nodes
     }
 
     /// Lowest create id in the out window, if any.
