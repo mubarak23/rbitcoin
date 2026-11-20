@@ -5757,7 +5757,7 @@ fn unproved_anchor_stops_at_a_met_checkpoint_and_keeps_the_one_below() {
 }
 
 #[test]
-fn unproved_anchor_samples_the_ordered_heights_once() {
+fn unproved_anchor_reads_the_queue_only_for_a_checkpoint_ahead() {
     let (_dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("hdr-anchor-once");
     hub.ensure_genesis().unwrap();
     let (peer, _rx) = slot(0);
@@ -5768,18 +5768,32 @@ fn unproved_anchor_samples_the_ordered_heights_once() {
         st.ordered_set.insert(hash);
         st.hash_height.insert(hash, h);
     }
-    for h in 10..=13u32 {
-        st.header_walk
-            .checkpoints
-            .push(mark_checkpoint(byte_hash(h as u8), h));
-    }
-    reset_anchor_ordered_visits_for_test();
-    assert!(unproved_anchor(&st, &hub).is_none());
+    let mut anchor_and_reads = |heights: &[u32]| {
+        st.header_walk.checkpoints = heights
+            .iter()
+            .map(|h| mark_checkpoint(byte_hash(*h as u8 + 100), *h))
+            .collect();
+        anchor_scan_arm();
+        let anchor = unproved_anchor(&st, &hub);
+        (anchor, anchor_scan_take().unwrap())
+    };
+
     assert_eq!(
-        anchor_ordered_visits_for_test(),
-        st.ordered.len() as u64,
-        "each ordered height is read once, not once per checkpoint"
+        anchor_and_reads(&[3, 7, 10, 11]),
+        (None, 1),
+        "the back of the queue reaches the lowest checkpoint ahead"
     );
+    assert_eq!(
+        anchor_and_reads(&[3, 10, 11, 12, 13]),
+        (Some((byte_hash(103), 3)), 4),
+        "an unmet checkpoint reads each ordered height once, not once per checkpoint"
+    );
+    assert_eq!(
+        anchor_and_reads(&[2, 3]),
+        (Some((byte_hash(103), 3)), 0),
+        "no checkpoint at or above the front leaves the queue unread"
+    );
+    assert_eq!(anchor_scan_take(), None, "taking the count disarms it");
 }
 
 #[test]

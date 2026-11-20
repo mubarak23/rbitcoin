@@ -49,21 +49,23 @@ pub const UNPROVEN_LEAD_BYTES: u64 = 1024 * 1024 * 1024;
 #[cfg(debug_assertions)]
 thread_local! {
     static WALK_UNIX: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-    static ANCHOR_ORDERED_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ANCHOR_SCAN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
-/// Reset the anchor ordered-height visit counter for a test.
+/// Count, from zero, the ordered hashes [`unproved_anchor`] reads on this
+/// thread. A debug node never arms it, so nothing counts until this call.
 #[cfg(debug_assertions)]
 #[doc(hidden)]
-pub fn reset_anchor_ordered_visits_for_test() {
-    ANCHOR_ORDERED_VISITS.with(|slot| slot.set(0));
+pub fn anchor_scan_arm() {
+    ANCHOR_SCAN.with(|slot| slot.set(Some(0)));
 }
 
-/// Ordered entries [`unproved_anchor`] read since the reset.
+/// Ordered hashes read since [`anchor_scan_arm`], then disarm. `None` when
+/// unarmed.
 #[cfg(debug_assertions)]
 #[doc(hidden)]
-pub fn anchor_ordered_visits_for_test() -> u64 {
-    ANCHOR_ORDERED_VISITS.with(|slot| slot.get())
+pub fn anchor_scan_take() -> Option<u64> {
+    ANCHOR_SCAN.with(std::cell::Cell::take)
 }
 
 /// Fix the walk clock for a test. `None` uses the system clock.
@@ -2316,43 +2318,26 @@ pub fn judge_refill(
 }
 
 /// Queue that continues the stored tip but has not met the next checkpoint.
-/// The hash is the proved parent those headers extend.
+/// The hash is the proved parent those headers extend: the highest
+/// checkpoint under the queue front. A queue that reaches a checkpoint at or
+/// above its front is already proved and has no anchor.
 #[doc(hidden)]
 pub fn unproved_anchor(st: &IbdWorkState, hub: &ChainHub) -> Option<(BlockHash, u32)> {
     let front = st.ordered.front().copied()?;
     let front_h = st.hash_height.get(&front).copied()?;
-    // One ordered-height sample answers every checkpoint: a checkpoint is
-    // covered when the queue's highest indexed hash reaches it.
-    let mut max_ordered_h: Option<u32> = None;
-    for hash in &st.ordered {
-        #[cfg(debug_assertions)]
-        ANCHOR_ORDERED_VISITS.with(|slot| slot.set(slot.get().saturating_add(1)));
-        if let Some(ht) = st.hash_height.get(hash).copied() {
-            max_ordered_h = Some(max_ordered_h.map_or(ht, |best| best.max(ht)));
-        }
-    }
-    // The highest checkpoint under the queue front is the anchor. A covered
-    // checkpoint at or above the front means the queue is already proved.
-    let mut reached = false;
-    let mut below: Option<&Checkpoint> = None;
-    for c in &st.header_walk.checkpoints {
-        if c.height >= front_h {
-            if max_ordered_h.is_some_and(|ht| ht >= c.height) {
-                reached = true;
-            }
-        } else {
-            let replace = match below {
-                Some(best) => c.height > best.height,
-                None => true,
-            };
-            if replace {
-                below = Some(c);
-            }
-        }
-    }
-    if reached {
+    let checkpoints = &st.header_walk.checkpoints;
+    let lowest_ahead = checkpoints
+        .iter()
+        .map(|c| c.height)
+        .filter(|h| *h >= front_h)
+        .min();
+    if lowest_ahead.is_some_and(|need| ordered_reaches(st, need)) {
         return None;
     }
+    let below = checkpoints
+        .iter()
+        .filter(|c| c.height < front_h)
+        .reduce(|best, c| if c.height > best.height { c } else { best });
     if let Some(cp) = below {
         return Some((cp.hash, cp.height));
     }
@@ -2361,6 +2346,16 @@ pub fn unproved_anchor(st: &IbdWorkState, hub: &ChainHub) -> Option<(BlockHash, 
         return Some((hub.tip_hash()?, tip_h));
     }
     None
+}
+
+/// Whether some ordered hash sits at or above `height`. Walks from the back,
+/// where the highest headers usually are, and stops at the first one.
+fn ordered_reaches(st: &IbdWorkState, height: u32) -> bool {
+    st.ordered.iter().rev().any(|hash| {
+        #[cfg(debug_assertions)]
+        ANCHOR_SCAN.with(|slot| slot.set(slot.get().map(|n| n.saturating_add(1))));
+        st.hash_height.get(hash).is_some_and(|ht| *ht >= height)
+    })
 }
 
 /// The confirmed tip when it sits under the queue front and above `anchor`.
