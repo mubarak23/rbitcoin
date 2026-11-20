@@ -1396,7 +1396,7 @@ fn reorg_pin_a_planted_queue_hides_the_walk_tip() {
     st.ordered.push_back(pin_hash(4));
     st.header_walk.tip.hash = Some(pin_hash(7));
     st.header_walk.tip.height = 5;
-    let (cands, _) = heavier_fork_candidates(&st, &hub).unwrap();
+    let (cands, _) = heavier_fork_candidates(&mut st, &hub).unwrap();
     assert!(cands.is_empty(), "{cands:?}");
     let _ = dir;
 }
