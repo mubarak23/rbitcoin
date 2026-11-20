@@ -57,10 +57,11 @@ impl LoadAheadState {
     }
 
     /// Publish the in-flight pins for the perf line: the governor's estimate
-    /// and the maps' heap at capacity.
+    /// and the maps' heap past it.
     fn publish_pins(&self) {
         let (.., est) = self.in_flight.size_snapshot();
-        rbitcoin_query::process_mem_stats::note_pins(est, self.in_flight.map_bytes());
+        self.pins
+            .note(est, self.in_flight.map_bytes_past_estimate());
     }
 
     /// Drop packs below the lookup wave's drain+fence snapshot, after that
