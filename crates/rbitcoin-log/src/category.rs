@@ -69,7 +69,7 @@ impl Category {
         }
     }
 
-    /// Exact lowercase name. `all`, `1`, and `""` are RPC selectors, not
+    /// Exact lowercase name. `all` and `none` are selectors, not
     /// categories; the RPC layer expands them.
     pub fn parse(s: &str) -> Option<Category> {
         Category::ALL.into_iter().find(|c| c.as_str() == s)
