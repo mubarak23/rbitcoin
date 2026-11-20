@@ -7950,11 +7950,10 @@ fn classify_headers(
         }
         if !connecting {
             // These headers are not sent to the store. A later parent can
-            // still join them.
+            // still join them. A short batch asks from our tip. A full page
+            // continues from its last hash, below.
             queue_batch_admits(&mut apply, headers);
-            if n < MAX_HEADERS_RESULTS {
-                apply.getheaders = Some(headers_sync_locator(hub, None));
-            }
+            ask_from_tip = true;
         } else {
             let last = headers[n - 1].block_hash();
             // Core `chain_start.nHeight + headers.size()`. One-header
@@ -8441,6 +8440,7 @@ pub async fn on_block(
     on_block_accept(hub, out_tx, follow, session, block, hash).await
 }
 
+#[allow(clippy::unnecessary_get_then_check)]
 #[doc(hidden)]
 pub fn on_block_unrequested_skip(
     hub: &ChainHub,

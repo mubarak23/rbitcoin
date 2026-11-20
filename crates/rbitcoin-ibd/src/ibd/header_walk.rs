@@ -3390,9 +3390,14 @@ pub fn pick_any_header_peer(st: &IbdWorkState, skip: Option<usize>) -> Option<us
         if let Some((_, _, _, id)) = best {
             return Some(id);
         }
-        // A quiet skip is refused on the first pass and accepted on the
-        // second, so the quiet check never changes this fallback.
-        skip.filter(|&id| st.slots.iter().any(|s| s.alive && s.id == id))
+        // The first pass refuses a quiet skip so another quiet peer can be
+        // ranked. The second pass asks that skip when they are the last
+        // live peer.
+        skip.filter(|&id| {
+            st.slots.iter().any(|s| {
+                s.alive && s.id == id && (quiet_ok || !st.header_walk.walk_quiet.contains(&id))
+            })
+        })
     }
     rank(st, skip, false).or_else(|| rank(st, skip, true))
 }
@@ -4527,8 +4532,6 @@ fn leaving_unproved_lead(proven: bool, hub: &ChainHub) -> bool {
 }
 
 /// Chain work could not be read. An unproved walk stays on the wide cap.
-/// The suite has no store that fails this read.
-#[cfg_attr(false, mutants::skip)]
 fn unproved_when_work_unreadable(proven: bool) -> bool {
     !proven
 }

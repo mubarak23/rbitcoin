@@ -153,8 +153,6 @@ impl HeldBodies {
         self.by_hash.get(hash).map(|row| row.waive)
     }
 
-    // `is_empty` had no caller. A constant body was not a session result,
-    // so the method is gone rather than restored for this lint.
     #[allow(clippy::len_without_is_empty)]
     #[doc(hidden)]
     pub fn len(&self) -> usize {
@@ -430,8 +428,6 @@ impl HeaderTips {
         self.by_hash.contains_key(hash)
     }
 
-    // `is_empty` had no caller. A constant body was not a session result,
-    // so the method is gone rather than restored for this lint.
     #[allow(clippy::len_without_is_empty)]
     #[doc(hidden)]
     pub fn len(&self) -> usize {

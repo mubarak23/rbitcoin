@@ -60,12 +60,6 @@ impl AsMap {
         self.bytes.len()
     }
 
-    // A loaded map is never empty; the suite cannot construct one.
-    #[cfg_attr(false, mutants::skip)]
-    pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-
     pub fn interpret_ip16(&self, ip16: &[u8; 16]) -> u32 {
         interpret(self, ip16)
     }

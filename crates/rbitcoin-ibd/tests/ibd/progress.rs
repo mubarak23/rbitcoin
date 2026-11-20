@@ -336,6 +336,16 @@ fn tip_rate_tracker_eta_surface() {
         gate.eta_string(t0 + Duration::from_secs(20), 0, 100),
         "eta=10s"
     );
+
+    // Neighborhood: assign's soft window reads this rate. Exactly 1e-6
+    // blocks/s is still closed. The next f64 opens it. `>` to `>=` would
+    // publish the dust rate, and `soft_confirm_window_n` would open one block.
+    let mut dust = TipRateTracker::new();
+    dust.first_at = Some(t0);
+    dust.rate_ema = Some(1e-6);
+    assert!(dust.eta_rate(t0 + Duration::from_secs(30)).is_none());
+    dust.rate_ema = Some(f64::from_bits(1e-6_f64.to_bits() + 1));
+    assert!(dust.eta_rate(t0 + Duration::from_secs(30)).is_some());
 }
 
 #[test]

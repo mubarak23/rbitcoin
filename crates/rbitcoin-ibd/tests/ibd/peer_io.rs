@@ -63,6 +63,40 @@ fn pio_pin_write_time_enters_the_rate() {
     assert_eq!(s.rate.work_started_ms, 55);
 }
 
+/// Cancelling the parent aborts both halves. A detached handle would leave
+/// the oneshot open.
+#[test]
+fn pio_pin_dropping_io_tasks_aborts_both_halves() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (read_tx, mut read_rx) = tokio::sync::oneshot::channel::<()>();
+        let (write_tx, mut write_rx) = tokio::sync::oneshot::channel::<()>();
+        let tasks = PeerIoTasks {
+            reader: tokio::spawn(async move {
+                let _hold = read_tx;
+                std::future::pending::<()>().await;
+            }),
+            writer: tokio::spawn(async move {
+                let _hold = write_tx;
+                std::future::pending::<()>().await;
+            }),
+        };
+        drop(tasks);
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            read_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+    });
+}
+
 /// Drop tells the peer task to stop.
 #[test]
 fn pio_pin_dropping_a_slot_shuts_the_peer() {

@@ -127,11 +127,8 @@ fn newest_in_largest_group(cands: NonEmptyCands<'_>) -> u64 {
     let mut best_group = cands.0[0].netgroup;
     let mut best_count = groups[&best_group].count;
     let mut best_id = groups[&best_group].id;
-    // Group-id order makes an equal-size tie deterministic. Distinct group
-    // ids make `<` and `<=` the same choice; `checked_sub` drops that `<`.
-    let mut ranked: Vec<_> = groups.iter().collect();
-    ranked.sort_by_key(|(group, _)| *group);
-    for (group, score) in ranked {
+    // Group ids are unique, so `<` and `<=` pick the same group.
+    for (group, score) in &groups {
         if score.count > best_count
             || (score.count == best_count && best_group.checked_sub(*group).is_some())
         {
