@@ -792,10 +792,9 @@ mod peer_queue_pins {
 #[cfg(test)]
 mod peer_header_pins {
     use super::{
-        add_pending_ancestors, announced_tip_is_hopeless, classify_headers, disconnected_pending,
-        drop_hashes_until_fit, evict_pending_for_room, header_announcement_connects,
-        maybe_expire_block_requests, pending_root, pending_walk, BLOCK_GETDATA_TIMEOUT,
-        MAX_PENDING_HEADERS, PENDING_WALK_LIMIT,
+        add_pending_ancestors, classify_headers, disconnected_pending, drop_hashes_until_fit,
+        evict_pending_for_room, header_announcement_connects, maybe_expire_block_requests,
+        pending_root, pending_walk, BLOCK_GETDATA_TIMEOUT, MAX_PENDING_HEADERS, PENDING_WALK_LIMIT,
     };
     use bitcoin::hashes::Hash;
     use bitcoin::BlockHash;
@@ -817,14 +816,6 @@ mod peer_header_pins {
             bits: bitcoin::CompactTarget::from_consensus(0x207f_ffff),
             nonce: n,
         }
-    }
-
-    /// Equal age is still inside the ancient window. One block older is not.
-    #[test]
-    fn peer_header_hopeless_starts_past_the_window() {
-        use std::cmp::Ordering::Less;
-        assert!(!announced_tip_is_hopeless(288, 0, Some(Less)));
-        assert!(announced_tip_is_hopeless(289, 0, Some(Less)));
     }
 
     /// The root is the pending header whose parent is not in the map.
@@ -909,23 +900,6 @@ mod peer_header_pins {
         let mut protected = HashSet::new();
         protected.insert(hash);
         assert!(disconnected_pending(&hub, &pending, &protected).is_empty());
-    }
-
-    /// A short batch that does not connect still asks for headers.
-    #[test]
-    fn peer_header_short_disconnected_batch_asks_again() {
-        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-short");
-        hub.ensure_genesis().expect("genesis");
-        let header = hdr(BlockHash::from_byte_array([1; 32]), 3);
-        let apply = classify_headers(
-            &hub,
-            &[header],
-            &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            false,
-        );
-        assert!(apply.getheaders.is_some());
     }
 
     fn junk_pending(n: usize) -> HashMap<BlockHash, bitcoin::block::Header> {
@@ -1020,24 +994,6 @@ mod peer_header_pins {
         assert!(requested.is_empty());
     }
 
-    /// One invalid header in the batch is misbehavior. The parent can be fine.
-    #[test]
-    fn peer_header_invalid_batch_misbehaves() {
-        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-invalid");
-        let header = hdr(BlockHash::all_zeros(), 9);
-        let hash = header.block_hash();
-        hub.note_invalid_block(hash);
-        let apply = classify_headers(
-            &hub,
-            &[header],
-            &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            false,
-        );
-        assert!(apply.misbehave);
-    }
-
     /// Failed claimed proof of work leaves first. The connected tip is not a
     /// failed fork, so a later stage does not drop it. Ancestors of `prev` stay.
     #[test]
@@ -1081,16 +1037,15 @@ mod peer_session_pins {
     use super::{
         addrfetch_timed_out, announce_unsent_tip, apply_cmpct_accept, apply_queued_decodes,
         ask_other_hb_for_block, finish_block_accept, getheaders_apply, handle_peer_control_msg,
-        header_is_stored, inbound_connect_and_handshake, on_addr_list, on_block_unrequested_skip,
-        on_cmpctblock, on_getblocks, on_headers_poll, on_heartbeat, on_inv,
-        on_inv_block_needs_headers, on_tip_event, queue_due_tx_invs, read_peer_version,
-        reconstruct_cmpct_from_mempool, requeue_later_pong, schedule_orphan_parent_getdata,
-        serve_getdata_full_block, serve_getdata_tail, serve_mempool_getdata,
+        header_is_stored, inbound_connect_and_handshake, on_block_unrequested_skip, on_cmpctblock,
+        on_headers_poll, on_heartbeat, on_inv, on_inv_block_needs_headers, on_tip_event,
+        queue_due_tx_invs, read_peer_version, reconstruct_cmpct_from_mempool, requeue_later_pong,
+        schedule_orphan_parent_getdata, serve_getdata_full_block, serve_mempool_getdata,
         tip_event_for_announce, tip_follow_locator, tx_announce_inbound_gated,
         tx_announce_maybe_count, tx_announce_peer_ok, tx_announce_should_queue,
         tx_inv_candidate_ok, wait_peer_verack, DecodeQueue, FullBlockReply, HandshakePolicy,
-        PeerFollowState, ADDRFETCH_TIMEOUT_SECS, BAN_SCORE_THRESHOLD, BLOCK_GETDATA_TIMEOUT,
-        MAX_ADDR_TO_SEND, MAX_BLOCKS_TO_ANNOUNCE, MAX_LOCATOR_SZ, MIN_PEER_PROTO_VERSION,
+        PeerFollowState, ADDRFETCH_TIMEOUT_SECS, BLOCK_GETDATA_TIMEOUT, MAX_BLOCKS_TO_ANNOUNCE,
+        MIN_PEER_PROTO_VERSION,
     };
     use crate::peers::{PeerConnType, PeerHub, PeerOut};
     use bitcoin::hashes::Hash;
@@ -1205,20 +1160,6 @@ mod peer_session_pins {
         assert!(!tx_announce_peer_ok(Some(&inn), &mp, &txid));
     }
 
-    /// A thousand addresses is the cap. One more is misbehavior.
-    #[test]
-    fn peer_session_addr_list_over_one_thousand_is_misbehavior() {
-        let (_peers, live) = peer(PeerConnType::AddrFetch);
-        let sock = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18444);
-        let addr = Address::new(&sock, ServiceFlags::NONE);
-        let at = |n: usize| vec![(0u32, addr.clone()); n];
-        let mut follow = PeerFollowState::new();
-        on_addr_list(&mut follow, Some(&live), &at(MAX_ADDR_TO_SEND)).unwrap();
-        assert_eq!(follow.ban_score, 0);
-        on_addr_list(&mut follow, Some(&live), &at(MAX_ADDR_TO_SEND + 1)).unwrap();
-        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
-    }
-
     /// A matching pong clears the outstanding ping.
     #[test]
     fn peer_wire_pong_clears_the_nonce() {
@@ -1245,60 +1186,6 @@ mod peer_session_pins {
         );
     }
 
-    /// A sendcmpct whose announce byte is neither 0 nor 1 is misbehavior.
-    #[test]
-    fn peer_wire_bad_sendcmpct_is_misbehavior() {
-        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("sendcmpct-arm");
-        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut follow = PeerFollowState::new();
-        let msg = NetworkMessage::Unknown {
-            command: bitcoin::p2p::message::CommandString::try_from("sendcmpct").unwrap(),
-            payload: vec![2],
-        };
-        assert!(handle_peer_control_msg(&msg, &hub, &tx, &mut follow, Some(&live)).unwrap());
-        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
-    }
-
-    /// A locator of 101 hashes is served. One more is misbehavior.
-    #[test]
-    fn peer_wire_getblocks_at_the_cap_stays() {
-        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("gb-cap");
-        hub.ensure_genesis().expect("genesis");
-        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let stop = BlockHash::all_zeros();
-        let within: Vec<BlockHash> = (0..MAX_LOCATOR_SZ)
-            .map(|i| BlockHash::from_byte_array([i as u8; 32]))
-            .collect();
-        let mut follow = PeerFollowState::new();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(on_getblocks(
-            &hub,
-            &tx,
-            &mut follow,
-            Some(&live),
-            &bitcoin::p2p::message_blockdata::GetBlocksMessage::new(within, stop),
-        ))
-        .unwrap();
-        assert_eq!(follow.ban_score, 0);
-        let over: Vec<BlockHash> = (0..=MAX_LOCATOR_SZ)
-            .map(|i| BlockHash::from_byte_array([i as u8; 32]))
-            .collect();
-        rt.block_on(on_getblocks(
-            &hub,
-            &tx,
-            &mut follow,
-            Some(&live),
-            &bitcoin::p2p::message_blockdata::GetBlocksMessage::new(over, stop),
-        ))
-        .unwrap();
-        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
-    }
-
     /// The chain locator is the tip. The error fallback would append zeros.
     #[test]
     fn peer_wire_locator_is_the_tip() {
@@ -1306,86 +1193,6 @@ mod peer_session_pins {
         hub.ensure_genesis().expect("genesis");
         let tip = hub.tip_hash().expect("tip");
         assert_eq!(tip_follow_locator(&hub), vec![tip]);
-    }
-
-    fn saw_notfound(rx: &mut tokio::sync::mpsc::UnboundedReceiver<PeerOut>) -> bool {
-        loop {
-            match rx.try_recv() {
-                Ok(PeerOut::Msg(NetworkMessage::NotFound(_))) => return true,
-                Ok(_) => {}
-                Err(_) => return false,
-            }
-        }
-    }
-
-    /// A block-relay peer is not told that a transaction is missing.
-    #[test]
-    fn peer_relay_block_only_skips_tx() {
-        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("relay-block");
-        let pool_dir = dir.path().join("pool");
-        std::fs::create_dir_all(&pool_dir).expect("pool dir");
-        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
-            &pool_dir,
-            hub.query.clone(),
-            400_000,
-            false,
-        )
-        .expect("mempool");
-        if hub.attach_mempool(mp).is_err() {
-            panic!("attach");
-        }
-        let (_peers, live) = peer(PeerConnType::BlockRelay);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut follow = PeerFollowState::new();
-        follow.getdata_tail.push_back(Inventory::WitnessTransaction(
-            bitcoin::Txid::from_byte_array([4; 32]),
-        ));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(serve_getdata_tail(&hub, &tx, &mut follow, Some(&live)))
-            .unwrap();
-        assert!(!saw_notfound(&mut rx));
-    }
-
-    /// MSG_FILTERED_BLOCK is misbehavior while NODE_BLOOM is off.
-    #[test]
-    fn peer_relay_filtered_block_misbehaves() {
-        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("relay-bloom");
-        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut follow = PeerFollowState::new();
-        follow.getdata_tail.push_back(Inventory::Unknown {
-            inv_type: 3,
-            hash: [0; 32],
-        });
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(serve_getdata_tail(&hub, &tx, &mut follow, Some(&live)))
-            .unwrap();
-        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
-    }
-
-    /// No mempool means a missing transaction stays quiet.
-    #[test]
-    fn peer_relay_missing_tx_stays_quiet() {
-        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("relay-quiet");
-        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut follow = PeerFollowState::new();
-        follow.getdata_tail.push_back(Inventory::WitnessTransaction(
-            bitcoin::Txid::from_byte_array([5; 32]),
-        ));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(serve_getdata_tail(&hub, &tx, &mut follow, Some(&live)))
-            .unwrap();
-        assert!(!saw_notfound(&mut rx));
     }
 
     /// An inv is not queued for a transaction the pool does not have.

@@ -658,7 +658,9 @@ fn assert_truc_violation(r: Result<AcceptResult, AcceptError>) {
 #[test]
 fn truc_topology_and_sizes() {
     let dir = tmp_dir();
-    let (ops, utxos) = chain_coins(&[500_000, 500_000, 500_000, 500_000, 500_000]);
+    let (ops, utxos) = chain_coins(&[
+        500_000, 500_000, 500_000, 500_000, 500_000, 500_000, 500_000,
+    ]);
     let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
 
     let v2_parent = ver_tx(&[ops[0]], 2, vec![pay(200_000), pay(200_000)]);
@@ -715,6 +717,28 @@ fn truc_topology_and_sizes() {
     );
     mp.accept_tx(&wide_v2, &utxos, TIP_OK)
         .expect("the TRUC child cap is only for version 3");
+
+    // Each size cap admits a transaction sitting exactly on it.
+    let at_cap = v3_of_vsize(&[ops[5]], 450_000, policy::TRUC_MAX_VSIZE);
+    mp.accept_tx(&at_cap, &utxos, TIP_OK)
+        .expect("truc cap: a version-3 tx of exactly 10,000 vB is admitted");
+    let small_parent = ver_tx(&[ops[6]], 3, vec![pay(450_000)]);
+    mp.accept_tx(&small_parent, &utxos, TIP_OK).unwrap();
+    let child_at_cap = v3_of_vsize(
+        &[out_of(&small_parent, 0)],
+        400_000,
+        policy::TRUC_CHILD_MAX_VSIZE,
+    );
+    mp.accept_tx(&child_at_cap, &utxos, TIP_OK)
+        .expect("truc cap: a version-3 child of exactly 1,000 vB is admitted");
+}
+
+/// A version-3 tx paying `value` whose vsize is exactly `vsize`.
+fn v3_of_vsize(inputs: &[OutPoint], value: u64, vsize: u64) -> Transaction {
+    (0..vsize as usize)
+        .map(|n| ver_tx(inputs, 3, vec![pay(value), return_pad(n)]))
+        .find(|tx| tx.vsize() as u64 == vsize)
+        .expect("a padding that lands on the vsize")
 }
 
 /// BIP 431 sibling eviction (Core `SingleTRUCChecks`): a second child of a

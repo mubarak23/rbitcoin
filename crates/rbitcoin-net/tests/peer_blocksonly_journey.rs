@@ -203,6 +203,23 @@ async fn blocksonly_sendraw_invs_inbound(
         [NetworkMessage::Tx(got)] => assert_eq!(got.compute_wtxid(), tx.compute_wtxid()),
         other => panic!("getdata must serve tx, got {other:?}"),
     }
+    let mut follow = PeerFollowState::new();
+    follow.wtxid_relay = true;
+    push(hub, &out_tx, &mut follow, Some(block_relay.as_ref()), wtx_getdata(tx)).await;
+    push(
+        hub,
+        &out_tx,
+        &mut follow,
+        Some(block_relay.as_ref()),
+        NetworkMessage::GetData(vec![Inventory::WitnessTransaction(bitcoin::Txid::from_byte_array(
+            [4; 32],
+        ))]),
+    )
+    .await;
+    assert!(
+        take_msgs(&mut out_rx).is_empty(),
+        "block-relay getdata: a block-relay-only peer gets neither the tx nor notfound"
+    );
     for s in [first, inbound, block_relay] {
         peers.unregister(s.id);
     }
