@@ -1512,7 +1512,7 @@ async fn ancient_weaker_fork_disconnects(
         rbitcoin_consensus::grind_regtest_pow(&mut h);
         h
     };
-    let edge = live_peer(peers, 18472, 13, false);
+    let edge = live_peer(peers, 18484, 13, false);
     let mut follow = PeerFollowState::new();
     push(
         hub,
@@ -1526,7 +1526,11 @@ async fn ancient_weaker_fork_disconnects(
         !edge.stop.load(Ordering::SeqCst),
         "ancient edge: a weaker fork 288 blocks under the tip keeps the session"
     );
-    let past = live_peer(peers, 18473, 14, false);
+    assert_eq!(
+        follow.ban_score, 0,
+        "ancient edge: a weaker fork 288 blocks under the tip is not misbehavior"
+    );
+    let past = live_peer(peers, 18485, 14, false);
     let mut follow = PeerFollowState::new();
     push(
         hub,

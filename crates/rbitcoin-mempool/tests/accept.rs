@@ -735,8 +735,12 @@ fn truc_topology_and_sizes() {
 
 /// A version-3 tx paying `value` whose vsize is exactly `vsize`.
 fn v3_of_vsize(inputs: &[OutPoint], value: u64, vsize: u64) -> Transaction {
-    (0..vsize as usize)
-        .map(|n| ver_tx(inputs, 3, vec![pay(value), return_pad(n)]))
+    let pad = |n| ver_tx(inputs, 3, vec![pay(value), return_pad(n)]);
+    // The script length prefix grows by two bytes past 252, so start a
+    // little under the unpadded gap.
+    let gap = vsize.saturating_sub(pad(0).vsize() as u64);
+    (gap.saturating_sub(4) as usize..=gap as usize)
+        .map(pad)
         .find(|tx| tx.vsize() as u64 == vsize)
         .expect("a padding that lands on the vsize")
 }
