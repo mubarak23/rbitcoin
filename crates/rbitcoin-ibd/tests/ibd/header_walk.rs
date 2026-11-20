@@ -5757,6 +5757,32 @@ fn unproved_anchor_stops_at_a_met_checkpoint_and_keeps_the_one_below() {
 }
 
 #[test]
+fn unproved_anchor_samples_the_ordered_heights_once() {
+    let (_dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("hdr-anchor-once");
+    hub.ensure_genesis().unwrap();
+    let (peer, _rx) = slot(0);
+    let mut st = IbdWorkState::new(vec![peer], hub.tip_hash(), Some(0));
+    for h in 5..=8u32 {
+        let hash = byte_hash(h as u8);
+        st.ordered.push_back(hash);
+        st.ordered_set.insert(hash);
+        st.hash_height.insert(hash, h);
+    }
+    for h in 10..=13u32 {
+        st.header_walk
+            .checkpoints
+            .push(mark_checkpoint(byte_hash(h as u8), h));
+    }
+    reset_anchor_ordered_visits_for_test();
+    assert!(unproved_anchor(&st, &hub).is_none());
+    assert_eq!(
+        anchor_ordered_visits_for_test(),
+        st.ordered.len() as u64,
+        "each ordered height is read once, not once per checkpoint"
+    );
+}
+
+#[test]
 fn candidate_prev_accepts_base_tip_and_checkpoint() {
     let prev = byte_hash(1);
     let mut st = fresh_walk();

@@ -49,6 +49,21 @@ pub const UNPROVEN_LEAD_BYTES: u64 = 1024 * 1024 * 1024;
 #[cfg(debug_assertions)]
 thread_local! {
     static WALK_UNIX: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static ANCHOR_ORDERED_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Reset the anchor ordered-height visit counter for a test.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn reset_anchor_ordered_visits_for_test() {
+    ANCHOR_ORDERED_VISITS.with(|slot| slot.set(0));
+}
+
+/// Ordered entries [`unproved_anchor`] read since the reset.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn anchor_ordered_visits_for_test() -> u64 {
+    ANCHOR_ORDERED_VISITS.with(|slot| slot.get())
 }
 
 /// Fix the walk clock for a test. `None` uses the system clock.
@@ -2306,17 +2321,23 @@ pub fn judge_refill(
 pub fn unproved_anchor(st: &IbdWorkState, hub: &ChainHub) -> Option<(BlockHash, u32)> {
     let front = st.ordered.front().copied()?;
     let front_h = st.hash_height.get(&front).copied()?;
+    // One ordered-height sample answers every checkpoint: a checkpoint is
+    // covered when the queue's highest indexed hash reaches it.
+    let mut max_ordered_h: Option<u32> = None;
+    for hash in &st.ordered {
+        #[cfg(debug_assertions)]
+        ANCHOR_ORDERED_VISITS.with(|slot| slot.set(slot.get().saturating_add(1)));
+        if let Some(ht) = st.hash_height.get(hash).copied() {
+            max_ordered_h = Some(max_ordered_h.map_or(ht, |best| best.max(ht)));
+        }
+    }
     // The highest checkpoint under the queue front is the anchor. A covered
     // checkpoint at or above the front means the queue is already proved.
     let mut reached = false;
     let mut below: Option<&Checkpoint> = None;
     for c in &st.header_walk.checkpoints {
         if c.height >= front_h {
-            let covered = st
-                .ordered
-                .iter()
-                .any(|hash| st.hash_height.get(hash).is_some_and(|ht| *ht >= c.height));
-            if covered {
+            if max_ordered_h.is_some_and(|ht| ht >= c.height) {
                 reached = true;
             }
         } else {
