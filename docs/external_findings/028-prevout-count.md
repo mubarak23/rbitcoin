@@ -9,4 +9,6 @@ when the transaction had inputs. A length mismatch is now an error. A
 matching length still verifies.
 
 **Regression:** `rbitcoin-consensus`
-`script::verify_routing_tests::prevout_count_must_match_inputs`
+`script::verify_routing_tests::script_job_build_rejects_unusable_prevouts`.
+Since aeb5c17dc the check is in `ScriptCheckJob::try_from_parts`, so a job
+with the wrong prevout count is never built.

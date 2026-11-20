@@ -757,9 +757,11 @@ fn p2pkh_fast_path_matches_interpreter_including_hash_collision() {
     assert_eq!(deleted.as_ref(), &[0x76, 0xa9, 0x88, 0xac]);
 }
 
-/// A wire slot past the parent output count fails when the job is built.
+/// A job is refused when it is built, not when it runs: a prevout list that
+/// is not one per input (finding 028), and a wire slot past the parent's
+/// output count.
 #[test]
-fn wire_vout_past_n_out_is_missing_prevout() {
+fn script_job_build_rejects_unusable_prevouts() {
     use bitcoin::block::{Header, Version};
     use bitcoin::{Block, BlockHash, CompactTarget, TxMerkleNode};
     use std::sync::Arc;
@@ -789,6 +791,29 @@ fn wire_vout_past_n_out_is_missing_prevout() {
         }],
         output: vec![],
     };
+    let all_rules =
+        rbitcoin_consensus::block::ScriptVerifyFlags::buried(true, true, true, true, true);
+    let one_out = TxOut {
+        value: Amount::from_sat(50),
+        script_pubkey: ScriptBuf::from_bytes(vec![0x51]),
+    };
+    for prevouts in [vec![], vec![one_out.clone(), one_out]] {
+        let n = prevouts.len();
+        let built = ScriptCheckJob::try_from_parts(
+            [0u8; 32],
+            rbitcoin_consensus::block::JobPrevouts::owned(prevouts),
+            rbitcoin_consensus::block::JobTx::owned(spend.clone()),
+            all_rules,
+        );
+        let Err(err) = built else {
+            panic!("{n} prevouts for one input built a job");
+        };
+        assert!(
+            matches!(&err, ConsensusError::Script(m) if m == "prevout count"),
+            "{n} prevouts: {err}"
+        );
+    }
+
     let block = Arc::new(Block {
         header: Header {
             version: Version::from_consensus(4),

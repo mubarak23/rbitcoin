@@ -41,7 +41,7 @@ rbitcoin reference, or redteam static analysis). Numbered reports live beside th
 | [025](./025-tapleaf-annex-prefix.md) | critical | Tapleaf `0x50` rejected | fixed | `script_path_accepts_leaf_0x50_with_annex_and_0xc2` |
 | [026](./026-false-witness-program.md) | high | False witness program accepted | fixed | `false_witness_program_is_eval_false` |
 | [027](./027-script-skip-wtxid.md) | critical | Script skip keyed by txid | fixed | `tip_script_pres_skips_only_matching_wtxid` |
-| [028](./028-prevout-count.md) | high | Empty prevouts skipped script checks | fixed | `prevout_count_must_match_inputs` |
+| [028](./028-prevout-count.md) | high | Empty prevouts skipped script checks | fixed | `rbitcoin-consensus` `script::verify_routing_tests::script_job_build_rejects_unusable_prevouts` |
 | [042](./042-milestone-anchor.md) | medium | Height milestone skipped a low-work fork | fixed | `low_work_fork_does_not_skip_even_at_the_milestone_height` |
 | [041](./041-hygiene.md) | medium | P2PKH policy flags, RPC token, inv cap, log newlines | fixed | `peer_command_logs_have_no_raw_newline` |
 | [037](./037-rpc-esplora-limits.md) | high | RPC body, work queue, waits, and Esplora client id | fixed | `unread_body_is_read_before_the_answer_up_to_the_cap` |
