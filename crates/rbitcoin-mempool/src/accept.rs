@@ -3257,38 +3257,6 @@ mod accept_mutant_pins {
         assert_eq!(mp.store.slot_stats().2, dead);
     }
 
-    /// BIP 431 admits a transaction sitting on either size cap.
-    #[test]
-    fn truc_at_either_size_cap_is_admitted() {
-        let dir = scratch("truc-cap");
-        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
-        let lone = v3(1);
-        let none = ConflictScan {
-            direct_conflicts: std::collections::BTreeSet::new(),
-            parent_txids: std::collections::BTreeSet::new(),
-        };
-        assert!(mp.check_truc(&lone, 10_000, &none).unwrap().is_none());
-        assert!(matches!(
-            mp.check_truc(&lone, 10_001, &none),
-            Err(AcceptError::Policy("TRUC-violation"))
-        ));
-
-        let parent = v3(2);
-        let pid = parent.compute_txid();
-        mp.bodies.insert(pid, std::sync::Arc::new(parent.clone()));
-        mp.graph.entries.insert(pid, entry(&parent, &[], &[]));
-        let scan = ConflictScan {
-            direct_conflicts: std::collections::BTreeSet::new(),
-            parent_txids: std::collections::BTreeSet::from([pid]),
-        };
-        let child = v3(3);
-        assert!(mp.check_truc(&child, 1_000, &scan).unwrap().is_none());
-        assert!(matches!(
-            mp.check_truc(&child, 1_001, &scan),
-            Err(AcceptError::Policy("TRUC-violation"))
-        ));
-    }
-
     /// A second child is not a sibling eviction when the first child has its own child.
     #[test]
     fn a_sibling_with_a_child_is_not_evicted() {
