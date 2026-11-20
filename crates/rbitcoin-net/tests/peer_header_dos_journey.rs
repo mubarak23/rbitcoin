@@ -195,10 +195,10 @@ async fn handshake_verack_and_addrv2(
     );
 }
 
-/// Each wire cap holds at its limit and disconnects one past it: an addr
-/// reply to an addr-fetch session, a `getblocks` locator, a `sendcmpct`
-/// announce byte, and a `getdata` for a filtered block while NODE_BLOOM is
-/// off.
+/// An addr reply of 1000 to an addr-fetch session is not misbehavior, and
+/// 1001 is. A `sendcmpct` announce byte of 2 and a `getdata` for a filtered
+/// block while NODE_BLOOM is off disconnect. With no mempool, a tx `getdata`
+/// gets no reply.
 async fn wire_caps_one_past_disconnect(
     hub: &rbitcoin_net::chain::ChainHub,
     peers: &std::sync::Arc<rbitcoin_net::peers::PeerHub>,
@@ -218,55 +218,25 @@ async fn wire_caps_one_past_disconnect(
         NetworkMessage::Addr(addrs(MAX_ADDR_TO_SEND)),
     )
     .await;
+    // An addr-fetch session ends after any reply of more than one address,
+    // so the 1000 reply ends this session too. It is not misbehavior.
     assert_eq!(
         follow.ban_score, 0,
-        "wire cap: an addr reply of exactly 1000 keeps the addr-fetch peer"
+        "wire cap: an addr reply of exactly 1000 is not misbehavior"
     );
-    push(
-        hub,
-        &out_tx,
-        &mut follow,
-        Some(fetch.as_ref()),
-        NetworkMessage::Addr(addrs(MAX_ADDR_TO_SEND + 1)),
-    )
-    .await;
-    assert!(
-        follow.ban_score >= BAN_SCORE_THRESHOLD,
-        "wire cap: an addr reply of 1001 disconnects the addr-fetch peer"
-    );
-
-    let genesis = hub.tip_hash().unwrap();
-    let locator = |n: usize| -> Vec<BlockHash> {
-        (0..n)
-            .map(|i| BlockHash::from_byte_array([i as u8; 32]))
-            .chain(std::iter::once(genesis))
-            .collect()
-    };
-    let sess = live_peer(peers, 18602, 602, true);
+    let over = live_peer_as(peers, 18606, 606, PeerConnType::AddrFetch);
     let mut follow = PeerFollowState::new();
     push(
         hub,
         &out_tx,
         &mut follow,
-        Some(sess.as_ref()),
-        NetworkMessage::GetBlocks(GetBlocksMessage::new(locator(MAX_LOCATOR_SZ - 1), zero_stop())),
-    )
-    .await;
-    assert_eq!(
-        follow.ban_score, 0,
-        "wire cap: a getblocks locator of 101 hashes is served"
-    );
-    push(
-        hub,
-        &out_tx,
-        &mut follow,
-        Some(sess.as_ref()),
-        NetworkMessage::GetBlocks(GetBlocksMessage::new(locator(MAX_LOCATOR_SZ), zero_stop())),
+        Some(over.as_ref()),
+        NetworkMessage::Addr(addrs(MAX_ADDR_TO_SEND + 1)),
     )
     .await;
     assert!(
         follow.ban_score >= BAN_SCORE_THRESHOLD,
-        "wire cap: a getblocks locator of 102 hashes disconnects"
+        "wire cap: an addr reply of 1001 is misbehavior"
     );
 
     let sess = live_peer(peers, 18603, 603, true);
@@ -322,6 +292,67 @@ async fn wire_caps_one_past_disconnect(
     assert!(
         take_msgs(&mut out_rx).is_empty(),
         "wire cap: a node without a mempool answers a tx getdata with nothing, not notfound"
+    );
+}
+
+/// A `getblocks` locator of 101 hashes is answered with an `inv` of the
+/// blocks after the fork point. 102 hashes disconnect.
+async fn getblocks_locator_cap(
+    hub: &rbitcoin_net::chain::ChainHub,
+    peers: &std::sync::Arc<rbitcoin_net::peers::PeerHub>,
+) {
+    let tip = hub.tip_height().unwrap();
+    assert!(tip >= 1, "the locator cap beat needs blocks after genesis");
+    let genesis = header_at(hub, 0).block_hash();
+    let locator = |n: usize| -> Vec<BlockHash> {
+        (0..n)
+            .map(|i| BlockHash::from_byte_array([i as u8 + 1; 32]))
+            .chain(std::iter::once(genesis))
+            .collect()
+    };
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+    let sess = live_peer(peers, 18602, 602, true);
+    let mut follow = PeerFollowState::new();
+    push(
+        hub,
+        &out_tx,
+        &mut follow,
+        Some(sess.as_ref()),
+        NetworkMessage::GetBlocks(GetBlocksMessage::new(locator(MAX_LOCATOR_SZ - 1), zero_stop())),
+    )
+    .await;
+    assert_eq!(
+        follow.ban_score, 0,
+        "wire cap: a getblocks locator of 101 hashes is not misbehavior"
+    );
+    let served: Vec<BlockHash> = take_msgs(&mut out_rx)
+        .into_iter()
+        .filter_map(|m| match m {
+            NetworkMessage::Inv(inv) => Some(inv),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|i| match i {
+            Inventory::Block(h) | Inventory::WitnessBlock(h) => Some(h),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<BlockHash> = (1..=tip).map(|h| header_at(hub, h).block_hash()).collect();
+    assert_eq!(
+        served, expected,
+        "wire cap: a getblocks locator of 101 hashes gets an inv of every block after genesis"
+    );
+    push(
+        hub,
+        &out_tx,
+        &mut follow,
+        Some(sess.as_ref()),
+        NetworkMessage::GetBlocks(GetBlocksMessage::new(locator(MAX_LOCATOR_SZ), zero_stop())),
+    )
+    .await;
+    assert!(
+        follow.ban_score >= BAN_SCORE_THRESHOLD,
+        "wire cap: a getblocks locator of 102 hashes disconnects"
     );
 }
 
@@ -2278,6 +2309,7 @@ async fn peer_header_dos_and_self_announce() {
 
     hub.confirm_empty_regtest(5).unwrap();
     assert_eq!(hub.tip_height(), Some(5));
+    getblocks_locator_cap(&hub, &peers).await;
     header_getdata_decisions(&hub, &peers).await;
     shorter_higher_work_rejected_by_the_store_is_not_fetched(&hub, &peers).await;
 
