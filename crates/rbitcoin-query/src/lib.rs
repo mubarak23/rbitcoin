@@ -283,8 +283,7 @@ pub struct ProcessOwnedSizes {
 pub struct HeapMeters {
     /// The in-flight pin estimate the retain governor charges.
     pub pin_est: u64,
-    /// The in-flight maps at capacity (txid map, out window, pack keys),
-    /// less the 40 B per txid entry and per pin `pin_est` already charges.
+    /// The in-flight maps at capacity (txid map, out window, pack keys).
     pub pin_maps: u64,
     /// Decoded bodies alive in the confirm pipeline, and their heap.
     pub decoded_blocks: u64,
@@ -301,7 +300,7 @@ pub struct HeapMeters {
 ///
 /// Write publishes loc packs from TLS after note/prune; load publishes the
 /// in-flight pins after each prune, disconnect drop and clear. Decoded
-/// bodies charge [`process_mem_stats::DECODED`] while they live. Sampled by the ~5s IBD perf
+/// bodies charge [`DECODED`] while they live. Sampled by the ~5s IBD perf
 /// line.
 pub mod process_mem_stats {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -309,6 +308,11 @@ pub mod process_mem_stats {
     static WLOC_PACKS: AtomicU64 = AtomicU64::new(0);
     static WLOC_PAIRS: AtomicU64 = AtomicU64::new(0);
     static WLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+    static PIN_EST: AtomicU64 = AtomicU64::new(0);
+    static PIN_MAPS: AtomicU64 = AtomicU64::new(0);
+
+    /// Decoded bodies (block + precompute rows) the confirm pipeline holds.
+    pub static DECODED: HeapGauge = HeapGauge::new();
 
     /// The in-flight pins load publishes.
     pub static PINS: PinMeter = PinMeter::new();
@@ -323,40 +327,11 @@ pub mod process_mem_stats {
         WLOC_BYTES.store(bytes, Ordering::Relaxed);
     }
 
-    /// Load-thread in-flight pins: the governor's estimate and the maps'
-    /// heap past it.
-    #[derive(Debug)]
-    pub struct PinMeter {
-        est: AtomicU64,
-        maps: AtomicU64,
-    }
-
-    impl PinMeter {
-        pub const fn new() -> Self {
-            Self {
-                est: AtomicU64::new(0),
-                maps: AtomicU64::new(0),
-            }
-        }
-
-        pub fn note(&self, est: u64, maps: u64) {
-            self.est.store(est, Ordering::Relaxed);
-            self.maps.store(maps, Ordering::Relaxed);
-        }
-
-        /// `(est, maps)` as last noted.
-        pub fn load(&self) -> (u64, u64) {
-            (
-                self.est.load(Ordering::Relaxed),
-                self.maps.load(Ordering::Relaxed),
-            )
-        }
-    }
-
-    impl Default for PinMeter {
-        fn default() -> Self {
-            Self::new()
-        }
+    /// Load-thread in-flight pins: the governor's estimate and the heap the
+    /// maps hold at capacity.
+    pub fn note_pins(est: u64, maps: u64) {
+        PIN_EST.store(est, Ordering::Relaxed);
+        PIN_MAPS.store(maps, Ordering::Relaxed);
     }
 
     /// Values that charge their bytes while they live, and how many.
@@ -399,8 +374,8 @@ pub mod process_mem_stats {
         }
     }
 
-    /// One value's charge on a [`HeapGauge`]: added on creation, given back
-    /// on drop. Values that share a body share one charge through an `Arc`.
+    /// One value's charge on a [`HeapGauge`]: added on creation and on each
+    /// clone, given back on drop.
     #[derive(Debug)]
     pub struct HeapCharge {
         gauge: &'static HeapGauge,
@@ -411,6 +386,16 @@ pub mod process_mem_stats {
         pub fn new(gauge: &'static HeapGauge, bytes: u64) -> Self {
             gauge.add(bytes);
             Self { gauge, bytes }
+        }
+
+        pub fn bytes(&self) -> u64 {
+            self.bytes
+        }
+    }
+
+    impl Clone for HeapCharge {
+        fn clone(&self) -> Self {
+            Self::new(self.gauge, self.bytes)
         }
     }
 
@@ -433,13 +418,12 @@ pub mod process_mem_stats {
 
     pub fn load() -> Snap {
         let (decoded_blocks, decoded) = DECODED.load();
-        let (pin_est, pin_maps) = PINS.load();
         Snap {
             wloc_packs: WLOC_PACKS.load(Ordering::Relaxed) as usize,
             wloc_pairs: WLOC_PAIRS.load(Ordering::Relaxed) as usize,
             wloc_bytes: WLOC_BYTES.load(Ordering::Relaxed),
-            pin_est,
-            pin_maps,
+            pin_est: PIN_EST.load(Ordering::Relaxed),
+            pin_maps: PIN_MAPS.load(Ordering::Relaxed),
             decoded_blocks,
             decoded,
         }
@@ -3014,6 +2998,16 @@ impl Query {
             .mphf_g_bytes
             .saturating_add(self.store.scripthash.mphf_g_resident_bytes());
         head.mphf_occ_bytes = self.store.scripthash.mphf_occ_resident_bytes();
+        let spend = self.store.txs.spend_delta_stats();
+        let heap = HeapMeters {
+            pin_est: mem.pin_est,
+            pin_maps: mem.pin_maps,
+            decoded_blocks: mem.decoded_blocks,
+            decoded: mem.decoded,
+            spend_notes: spend.notes_bytes,
+            spend_dir: spend.directory_bytes,
+            conf_plans: self.confirm_parents.header_plan_bytes(),
+        };
         ProcessOwnedSizes {
             conf_plans,
             sh_runs: self.sh_run.on_disk_run_count(),
@@ -3024,23 +3018,7 @@ impl Query {
             wloc_packs: mem.wloc_packs,
             wloc_pairs: mem.wloc_pairs,
             wloc_bytes: mem.wloc_bytes,
-            heap: HeapMeters::default(),
-        }
-    }
-
-    /// The IBD heap meters for the perf line. Takes the spend-delta and
-    /// header-plan locks; call from the ~5s publish, not per wave.
-    pub fn heap_meters(&self) -> HeapMeters {
-        let mem = process_mem_stats::load();
-        let spend = self.store.txs.spend_delta_stats();
-        HeapMeters {
-            pin_est: mem.pin_est,
-            pin_maps: mem.pin_maps,
-            decoded_blocks: mem.decoded_blocks,
-            decoded: mem.decoded,
-            spend_notes: spend.notes_bytes,
-            spend_dir: spend.directory_bytes,
-            conf_plans: self.confirm_parents.header_plan_bytes(),
+            heap,
         }
     }
 
