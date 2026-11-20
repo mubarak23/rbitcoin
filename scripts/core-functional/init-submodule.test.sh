@@ -106,6 +106,16 @@ assert_ok "missing tree tried clone" grep -q clone "$WORKDIR/git.log"
 
 assert_fail "two args" bash "$SCRIPT" /tmp/a /tmp/b
 
+# The checkout pins Core three ways. A commit that stages a moved submodule
+# must not leave them disagreeing.
+want="$(sed -n 's/^PIN_SHA="\([0-9a-f]\{40\}\)".*/\1/p' "$SCRIPT")"
+inventory="$(sed -n 's/^core_commit = "\([0-9a-f]\{40\}\)".*/\1/p' "$ROOT/scripts/core-functional/inventory.toml")"
+assert_ok "inventory core_commit is PIN_SHA" test "$inventory" = "$want"
+if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  gitlink="$(git -C "$ROOT" ls-files -s third_party/bitcoin | awk '{print $2}')"
+  assert_ok "third_party/bitcoin gitlink is PIN_SHA" test "$gitlink" = "$want"
+fi
+
 if [[ -f "$ROOT/third_party/bitcoin/src/test/data/script_tests.json" ]]; then
   live="$(git -C "$ROOT/third_party/bitcoin" rev-parse HEAD)"
   want="$(sed -n 's/^PIN_SHA="\([0-9a-f]\{40\}\)".*/\1/p' "$SCRIPT")"
