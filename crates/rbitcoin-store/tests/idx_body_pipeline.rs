@@ -611,6 +611,32 @@ fn merged_bounce_over_the_keep_cap_is_not_kept() {
 }
 
 #[test]
+fn growing_the_kept_bounce_asks_for_the_wave_need_only() {
+    let (dir, t, base) = peek_body_file();
+    let wave = |groups: u64| -> Vec<u64> {
+        (0..groups)
+            .flat_map(|k| large_group(base + k * PEEK_GROUP_STRIDE))
+            .collect()
+    };
+    let (three, five) = (wave(3), wave(5));
+    let need = merged_bytes(&five);
+    assert!(
+        need <= 1024 * 1024 && need < 2 * merged_bytes(&three),
+        "{need}"
+    );
+
+    peek_wave(&t, &three);
+    let grown = peek_wave(&t, &five);
+    assert_peeked(&t, &five, &grown);
+    assert!(
+        grown.asked.largest <= need,
+        "the kept bounce grew to {} for a {need}-byte wave",
+        grown.asked.largest
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_reused_bounce_never_fills_a_window_past_a_short_read() {
     let (dir, t, base) = peek_body_file();
     let large = large_group(base);

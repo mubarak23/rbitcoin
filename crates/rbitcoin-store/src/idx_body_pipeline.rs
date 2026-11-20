@@ -425,35 +425,6 @@ fn keep_bounce(buf: Vec<u8>) {
     }
 }
 
-/// Merged-read bounce bytes one thread keeps between waves (RAM traded for
-/// skipping an allocation and its zeroing per wave). A wave whose merged
-/// spans need more gets a buffer of its own and the kept one stays.
-const BOUNCE_KEEP_BYTES: usize = 1024 * 1024;
-
-thread_local! {
-    /// Every merged group of a wave reads its page span into its own slice
-    /// of this buffer.
-    static BOUNCE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-}
-
-/// At least `need` bounce bytes. Hand them back with [`keep_bounce`].
-fn take_bounce(need: usize) -> Vec<u8> {
-    if need > BOUNCE_KEEP_BYTES {
-        return vec![0u8; need];
-    }
-    let mut buf = BOUNCE.with(|kept| std::mem::take(&mut *kept.borrow_mut()));
-    if buf.len() < need {
-        buf.resize(need, 0);
-    }
-    buf
-}
-
-fn keep_bounce(buf: Vec<u8>) {
-    if buf.len() <= BOUNCE_KEEP_BYTES {
-        BOUNCE.with(|kept| *kept.borrow_mut() = buf);
-    }
-}
-
 #[doc(hidden)]
 pub fn pread_grouped_peeks(
     jobs: &mut [IdxBodyJob],
@@ -483,12 +454,14 @@ pub fn pread_grouped_peeks(
         bounce_need = end;
     }
     let mut bounce = take_bounce(bounce_need);
+    let bounce_base = bounce.as_mut_ptr();
     // SAFETY: each SQE buffer is a distinct job.body slice (singleton) or a
-    // disjoint bounce range (merged). Dest windows do not overlap jobs in one
-    // wave, and `bounce` is not resized until the reads are done.
+    // disjoint bounce range (merged), all derived from `bounce_base` taken
+    // once. Dest windows do not overlap jobs in one wave, and `bounce` is not
+    // touched until the reads are done.
     let mut ops: Vec<ReadOp<'_>> = Vec::with_capacity(groups.len());
-    for (g, (page_off, span, members)) in groups.iter().enumerate() {
-        let (off, _, direct) = group_sqe(*page_off, *span, members, dests);
+    for (g, (page_off, _, members)) in groups.iter().enumerate() {
+        let (off, direct) = group_sqe(*page_off, members, dests);
         let slice = if let Some(wi) = direct {
             let d = &dests[wi];
             let body = &mut jobs[d.job].body;
@@ -501,11 +474,15 @@ pub fn pread_grouped_peeks(
                     "invariant: merged body peek missing bounce",
                 ));
             };
-            let len = at.len();
-            let ptr = bounce[at].as_mut_ptr();
-            // SAFETY: `ptr..ptr + len` is this merged group's bounce range,
-            // disjoint from every other group's, until after pread.
-            unsafe { std::slice::from_raw_parts_mut(ptr, len) }
+            if at.end > bounce.len() {
+                return Err(StoreError::Corrupt(
+                    "invariant: merged body peek past its bounce",
+                ));
+            }
+            // SAFETY: `at` lies inside `bounce` (checked), so the offset stays
+            // in the allocation, and the range is this merged group's alone
+            // until after pread.
+            unsafe { std::slice::from_raw_parts_mut(bounce_base.add(at.start), at.len()) }
         };
         ops.push(ReadOp {
             fd: body_fd,
