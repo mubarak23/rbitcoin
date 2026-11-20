@@ -12,7 +12,340 @@ before 1.0).
 ### Changed
 
 - **Workspace version 0.9.99:** in-tree toward 0.10.0.
-  Published GitHub Releases remain 0.9.0; `v0.9.x` is the patch branch.
+  The latest published release is 0.9.2; `v0.9.x` is the patch branch.
+
+## [0.9.2] — 2026-11-12
+
+### Highlights
+
+- **A datadir that already connected the bad re-spend needs a re-sync.**
+  IBD could connect a block that spent an output a lower block in the
+  same write had already spent. After a disconnect, that output read as
+  unspent. 0.9.2 does not connect that block. A store that already did
+  keeps the wrong spent slot. Schema stays 27, so a 0.9.1 directory
+  opens in place.
+- **IBD no longer stops on a spend of a later block's transaction.** A
+  valid block in front of that spend used to halt with "engine fault
+  repeated" until restart. The bad block is marked invalid and IBD
+  continues.
+- **`submitblock` no longer caches a valid block as invalid when a
+  sibling connects mid-check.** The check reads one tip. A competing
+  block that lands during the check no longer leaves the submission
+  `bad-txns-inputs-missingorspent` until restart.
+- **A restarted `--prune-seqsigwit` node can reorg back.** It used to
+  drop the block a peer sent and stay on the lighter branch until the
+  next restart.
+- **Silent-payment subscribe addresses decode.** The address includes
+  the BIP-352 version: `sp1q` on mainnet and `tsp1q` on test networks,
+  including regtest.
+- **A signet datadir is recorded on first start.** `{datadir}/network`
+  stores the network and its message start. A later start with another
+  challenge refuses before the store opens. A 0.9.1 datadir has no
+  marker. Start it once with its original `--signet-challenge`, or that
+  first start is the one it keeps.
+- **RPC auth schemes match in any case.** A crash can no longer leave
+  an empty `rpc.token` that blocks the next start.
+- **An I2P SAM reply with a non-ASCII character no longer panics the
+  node at startup.**
+- **`getindexinfo` lists the basic block filter index** when
+  `--block-filter-index` is on.
+- **`submitpackage` reports `other-wtxid`** when the txid is already in
+  the mempool under another witness.
+- **A lost outbound onion or I2P peer is replaced.** Stale-tip rotation
+  no longer treats every overlay peer as one network group.
+
+Thanks to @niteshbalusu11, @erskingardner, @w3irdrobot, @SovereignTechnology for changes in this release.
+
+### Fixed
+
+
+- **A datadir created for one signet no longer opens under another.** Every
+  signet shares one genesis block, so the stored-genesis check let a datadir
+  open under a different `--signet-challenge`, or under the default one.
+  `{datadir}/network` now records the network and its P2P message start on
+  the first start, and logs `datadir: no network marker in …; adopting …`.
+  Once it exists, a start on another network or challenge refuses with
+  `Wrong datadir for network?` before the store opens, before any peer, and
+  before RPC serves.
+- **Upgrade note for signet:** a datadir from before this release has no
+  `network` file. Its first start after the upgrade records whatever
+  network that start uses. A signet datadir can't be told apart by its
+  genesis, so start it once with its original `--signet-challenge`.
+  Started with another challenge first, it keeps that one and refuses the
+  original from then on.
+
+
+- **`getindexinfo` lists the block filter index.** With `--block-filter-index`, it
+  now reports `basic block filter index` beside `txindex`, as Core does with
+  `-blockfilterindex`: `synced` once the committed filters reach the tip, and
+  `best_block_height` the last filtered height. `getindexinfo "basic block filter
+  index"` answers that entry alone. Clients that check it before using
+  `getblockfilter` or BIP157 peers no longer see the index as missing.
+
+
+- **Consensus: IBD no longer halts on a spend of a later block's
+  transaction behind a valid block.** When one write held a valid block
+  and then a block spending a transaction that only a later block
+  creates, the write was rejected, the valid block connected on its own
+  retry, and the invalid block then halted IBD with "engine fault
+  repeated" until a restart. Bitcoin Core rejects that block with
+  `bad-txns-inputs-missingorspent` and carries on. The rejected write had
+  already inserted its transactions into `tx.head` but did not record
+  that, so the missing-parent check could not tell the index had caught
+  up. A write now records its `tx.head` insert whether or not it is
+  rejected, and the block is marked invalid
+  ([089](docs/external_findings/089-missing-parent-verdict.md)).
+
+
+- **A pruned node reorgs back onto a block it left.** With
+  `--prune-seqsigwit`, a node that had restarted and then reorged away from
+  a block kept saying it already had that block. It dropped the body a peer
+  sent back and stayed on the lighter branch until the next restart. Core
+  keeps the last 288 blocks on a pruned node and completes that reorg. The
+  in-memory block cache now records the real height of each block, so a
+  disconnect removes exactly the blocks it took off the chain, and a later
+  connect no longer leaves the cache stuck on the old branch. Each
+  disconnected block also leaves the set of best-chain hashes, not only the
+  old tip.
+
+
+- **A lost outbound onion or I2P peer is replaced.** The refill after a drop
+  and the stale-tip rotation each dial one peer, and that one dial always went
+  to clearnet. It now goes to an onion or I2P address when no outbound onion
+  or I2P peer is live. While one is live, it stays on clearnet as before.
+- **Stale-tip rotation no longer drops onion and I2P peers first.** It counted
+  every onion and I2P peer as one network group, so with two of them it chose
+  one of those before any clearnet peer. Each network now has its own groups,
+  split by the first four address bits as in Bitcoin Core.
+
+
+- **IBD no longer connects a block that re-spends a same-block spend after
+  a rejected write.** When IBD merged two load batches into one write and
+  that write rejected a block that spent an output a lower block in the
+  write had already spent in its own block, the one-block retry connected
+  the bad block. If that block was later disconnected, the output read as
+  unspent (`gettxout`, Electrum, Esplora, mempool admission) and another
+  re-spend connected. The archive's spent slot for an output spent inside
+  the write now names the first spender in chain order, not whichever map
+  entry came last. A store that already connected such a block keeps the
+  wrong slot; re-sync it.
+
+
+- **RPC auth schemes match in any case.** `Authorization: BEARER …` and
+  `basic …` are accepted, since RFC 9110 makes auth schemes
+  case-insensitive. Before, only `Bearer`/`bearer` and `Basic`/`basic`
+  passed.
+- **An empty RPC token file no longer blocks start.** A crash between
+  creating and writing `rpc.token` left a zero-length file, and every later
+  start failed with "empty". The node now replaces a zero-length
+  `rpc.token` with a new token. A new token is written whole to a
+  sibling file, synced, and renamed into place, so a crash can no longer
+  leave a partial token that later starts accept.
+
+
+- **An I2P SAM reply with a non-ASCII character no longer panics the node.**
+  The SAM key-value parser sliced a reply token at the key's byte length, so a
+  multi-byte UTF-8 character across that index panicked at startup. It now
+  skips that token (#1361).
+
+
+- **`blockchain.silentpayments.subscribe` returns a valid address.** The
+  `address` in the result left out the BIP-352 version character, so it
+  was one character short and did not decode. It now starts `sp1q` on
+  mainnet and `tsp1q` on every test network. Regtest used `sprt`, which
+  is not a BIP-352 prefix.
+
+
+- **`submitblock` no longer marks a valid block invalid when a competing
+  block connects during its input check.** The check read spentness at the
+  live tip on every input. A sibling from a peer that connected mid-check
+  and spent one of the same coins made the submitted block
+  `bad-txns-inputs-missingorspent`, cached invalid until restart or
+  `reconsiderblock`, and its children were `bad-prevblk`. The check now
+  reads the tip once and reads every input at that height. Its reject
+  stands only if the tip is unchanged and no block was disconnected while
+  it ran (a reorg undone before it finished counts). Otherwise the block
+  takes the serialized accept path, and an equal-work sibling is
+  `inconclusive`, as in Core.
+
+
+- **`submitpackage` reports `other-wtxid`.** A member whose txid is already
+  in the mempool under another witness now returns Core's
+  `{"txid", "other-wtxid"}` entry naming the live wtxid, instead of fee and
+  size fields.
+
+## [0.9.1] — 2026-11-10
+
+### Highlights
+
+- **Opening a data directory with 0.9.1 is one-way.** Any open rewrites
+  `store/meta` to schema 27, whether or not `--prune-seqsigwit` is set.
+  The table bytes stay as they were. A 0.9.0 binary will not open that
+  directory.
+- **`--prune-seqsigwit` now drops witness history.** The flag keeps
+  scriptSig and witness for the last 288 blocks and deletes the rest of
+  `seqsigwit.body`. A directory that 0.9.0 already marked pruned is
+  rewritten into that window, and then the old body is freed. Later
+  blocks do not grow that file.
+- **Silent-payment tweaks can run on that prune.** Turn `--sp-tweaks` on
+  before taproot, or later once the index covers every height the cut
+  will drop. Sealed rows still serve. A scan that cannot read a height
+  returns that error.
+- **Wallet services stay off Tor and I2P unless you ask.** Electrum and
+  Esplora are no longer published from `--tor-control` or
+  `--i2p-accept-incoming` alone. Set `--electrum-onion`,
+  `--esplora-onion`, `--electrum-i2p`, or `--esplora-i2p`. Saved keys
+  are kept. A switch without its overlay, or without a TCP listener on
+  `127.0.0.1` or `0.0.0.0`, refuses to start.
+- **Names behind a proxy are no longer looked up on the host.**
+  `--connect` and `addnode` hostnames go to the SOCKS proxy.
+  `--only-net onion` does not query clearnet seeds. I2P tunnels use the
+  router default of three hops.
+- **A bad Tor onion key stops startup.** An `ADD_ONION` reply and a
+  saved `onion/*.priv` key must be a v3 service id and an `ED25519-V3`
+  key of 64 bytes. Remove the named file to generate a new key.
+- **`estimatesmartfee 1` answers as target 2 until the mempool is busy.**
+  Electrum `blockchain.estimatefee 1` does the same. Once flow is full,
+  target 1 is the 1-block quote. Electrum target 0, `estimaterawfee 1`,
+  and Esplora key `1` stay on the 1-block quote.
+- **A memory limit bounds the worker pools.** On Linux, the scripthash
+  build and the transaction-head rebuild use the smaller of host memory
+  and the cgroup limit (`MemoryMax=`, `docker --memory`).
+- **NixOS can set the operator flags.** Peering, mempool, RPC, indexes,
+  and Tor control are `services.rbitcoin` options. Wallet onion and I2P
+  forwards pass the new switches only when that listener is enabled.
+- **`cargo install --locked` matches this release.** The 0.9.0 tag left
+  the lock at 0.8.99. This tag's lock names 0.9.1.
+
+Thanks to @erskingardner, @botcount for changes in this release.
+
+### Added
+
+
+- **The NixOS module accepts the operator flags.** Peering, mempool, permission, index, RPC, signet, and notify settings are `services.rbitcoin` options. `p2p.maxInbound` defaults to 200 and omits `--max-inbound` at that value. `netPermissionBind` requires `p2p.listen`, is refused with `trustPeer`, and its port is opened when `p2p.openFirewall` is set. `rpc.tokenFile` and `rpc.workQueue` require an RPC listener. `esplora.hiddenService` requires `esplora.enable`. `electrum.hiddenService` requires `electrum.enable`. When an onion flag implies Tor control, the module enables `services.tor`, listens on `127.0.0.1:9051`, and writes a group-readable cookie at `/run/tor/control.authcookie`. A custom cookie must be a file in `/run/tor` or `/var/lib/tor`, because the tor unit cannot write anywhere else. The `tor` group uses the NixOS tor gid. `p2p.listenOnion` requires `p2p.maxInbound` above 0. `apiLog` outside the datadir is writable. The datadir, cold datadir, log, token, and socket paths are refused when they would take ownership of a system directory such as `/`, `/run`, `/tmp`, `/srv`, `/var`, `/var/log`, or `/var/lib`, or of another service's tree such as `/run/tor`, `/var/lib/tor`, `/var/lib/i2pd`, `/run/systemd`, or `/nix/store`. A `--connect` or `--trust-peer` address in `fc00::/8` requires `cjdns.reachable`. `onlyNet` onion requires `proxy` or `onionProxy`, and `onlyNet` i2p requires `i2p.sam`. `esplora.blockTemplate` and `esplora.socketPath` require `esplora.enable`. `ExecStart` writes each `%` as `%%`, so systemd leaves `%s` in `alertNotify` and `startupNotify` for the node. `extraArgs` remains for `--conf`, test knobs, and secrets that must stay off argv.
+
+
+- **`--sp-tweaks` can run beside `--prune-seqsigwit`.** Turn it on before
+  taproot, or later once every height from that origin through the dropped
+  range is sealed or still in the last 288 blocks. Prune can be turned on
+  after the index is built when the index covers every height the cut will
+  drop. Sealed rows keep being served from the index. A pruned
+  `blockchain.tweaks.subscribe` reads an unsealed tip from the keep window.
+  A confirm batch does not delete a witness until that height's tweak row
+  is sealed, and only through the tip whose flush has landed. A crash that
+  cut the witness stem before saving the prune height is treated as those
+  heights already dropped. A silent-payment scan that cannot read a
+  height returns that error and does not report the scan finished.
+
+
+### Changed
+
+
+- **NixOS module eval is its own CI job.** `nixos-module-eval` starts with `pread` and `rust-forward`, after `qc` and `test`, and does not gate `coverage`. It does not block merge until the Protected ruleset names that check. Assertion and argv checks evaluate the rbitcoin module without a full NixOS system for each case. The unix-socket argv is checked against a real NixOS `ExecStart`.
+
+
+- **`--prune-seqsigwit` keeps scriptSig and witness for the last 288 blocks.**
+  Turning the flag on removes the rest of `seqsigwit.body`, and later blocks
+  do not grow that file. That cut logs the size it freed. Opening a datadir that 0.9.0 already pruned rewrites
+  those 288 blocks into the new window and then frees the old body. Opening
+  any datadir, pruned or not, updates the store to schema 27. A 0.9.0 binary
+  will not open it.
+
+
+- **Electrum and Esplora go on Tor and I2P only when asked.** Before, a
+  listening Electrum was always published as an onion once `--tor-control`
+  was set, Esplora too unless `--esplora-onion=0`, and `--i2p-accept-incoming`
+  gave both their own I2P destination. Now each is a switch, **off by
+  default**: `--electrum-onion`, `--esplora-onion`, `--electrum-i2p`,
+  `--esplora-i2p` (config `electrum_onion=`, `esplora_onion=`,
+  `electrum_i2p=`, `esplora_i2p=`). `--i2p-accept-incoming` is P2P only.
+  **Upgrading:** a node that relied on `--tor-control` or
+  `--i2p-accept-incoming` alone to publish its wallet services stops
+  publishing them until the matching switch is set; the saved keys under
+  `onion/` and `i2p/` are kept, so the addresses come back unchanged. A
+  switch needs its overlay (`--tor-control` or `--i2p-sam`) and a TCP
+  listener on `127.0.0.1` or `0.0.0.0`, or the node refuses to start.
+- **NixOS.** `electrum.hiddenService` now passes `--electrum-onion` (it had
+  no effect before), and new `electrum.i2p` / `esplora.i2p` pass the I2P
+  switches. A NixOS node that set `tor.control` or `p2p.listenOnion` without
+  `hiddenService` no longer publishes its wallet onions.
+
+
+### Fixed
+
+
+- **Worker pools respect the cgroup memory limit.** The scripthash extract
+  and `tx.head` rebuild sized their workers from host `MemAvailable`, so a
+  node under systemd `MemoryMax=`, `docker --memory`, or a Kubernetes limit
+  could start more workers than the limit allowed and be OOM-killed during
+  the first scripthash build. On Linux the probe now takes the smaller of
+  `MemAvailable` and the cgroup v2 headroom. Reclaimable page cache counts as
+  headroom, so a cgroup full of file cache after IBD still gets its workers.
+
+
+- **`estimatesmartfee 1` and Electrum `blockchain.estimatefee 1` answer as
+  target 2, like Core, until mempool flow is warm.** Before flow fullness
+  reaches 1, the 1-block quote still blends in the cold 99.9% history: on
+  signet, where flow rarely warms, it was ~76x the 2-block rate.
+  `estimatesmartfee 1` then reports `"blocks": 2`. At full flow, target 1
+  is the warm 1-block quote. Electrum target 0 stays the 1-block quote.
+  `estimaterawfee 1` and Esplora `/fee-estimates` key `1` keep the 1-block
+  quote, as Core's `estimaterawfee` does (#1437).
+
+
+- **`--locked` builds work again** (#1448). `Cargo.lock` still listed the
+  workspace crates at `0.8.99` after the 0.9.0 cut, so `cargo build --locked`
+  and `cargo install --locked` refused the lock. The lock now names the
+  workspace version. The `qc` job now runs `cargo metadata --locked`, so a
+  release bump that leaves the lock behind fails CI.
+
+
+- **`--proxy` now resolves `--connect` and `addnode` names.** The node
+  hands the name to the SOCKS proxy (address type 3). Before, the OS resolver
+  looked it up first, so clear-text DNS queries for the peer left the host
+  outside the proxy, again every two seconds while the dial failed. The
+  name is also the key of its session now: a redial pass no longer opens a
+  second session to a name that is up, two names on one port stay apart, a
+  `--trust-peer` hostname's session is the trusted one, a `--connect`
+  name is dialed by catch-up and tip-follow, `disconnectnode` takes the
+  name `getpeerinfo` lists as `addr`, and a peer reached by name is told the
+  onion address we listen on, as a proxied IP peer is. Past 1024 distinct
+  proxied names a new one is refused instead of sharing one key (#1348).
+- **`--only-net onion` no longer asks clearnet seeds.** With no IPv4 or
+  IPv6 reachable, the node sends no DNS seed query, local or through
+  `--proxy`, and adds only the fixed onion seeds. Before, it looked up the
+  seed hostnames anyway and dropped the answers. With `--proxy` it added no
+  fixed seeds at all, so it had no first peer (#1348).
+- **The I2P session uses the router's tunnel length.** The node no longer
+  sets `inbound.length=1 outbound.length=1` in `SESSION CREATE`, which made
+  one-hop tunnels. The router default (three hops) applies, as in Core
+  (#1348).
+
+
+- **A release cut updates `Cargo.lock`.** `--minor`, `--major`, `--patch`,
+  and `--dev-next` rewrite each workspace crate's version in the root lock
+  and in the `fuzz` and `script-oracle` locks. A crate that is not a
+  workspace member keeps its version, including one that happens to use the
+  same version string. A quoted `name version` dependency spec moves with
+  that member. `third_party` locks are left alone. The cut fails when the
+  lock was not already on the pre-cut version, so a stale lock is not
+  committed as the new version. `./scripts/release.sh` refuses the tag
+  unless the lock matches. The 0.9.0 cut left the workspace crates at
+  `0.8.99`, so `cargo build --locked` failed. `release-gate` rejects a lock
+  that still names the old version.
+
+
+### Security
+
+
+- **A forged Tor control reply can no longer plant an onion key or address.**
+  The node checks each `ADD_ONION` reply before it saves or advertises
+  anything. The `ServiceID` must be a valid v3 onion address. A `PrivateKey`
+  must be `ED25519-V3:` followed by Base64 of 64 bytes. A saved
+  `onion/*.priv` key gets the same check before it goes into `ADD_ONION`, so
+  a key with a space or a line break cannot add arguments or a second
+  control command. A bad saved key stops the start with an error that names
+  the file to remove. Port of bitcoin/bitcoin#36142 (#1475).
 
 ## [0.9.0] — 2026-11-06
 

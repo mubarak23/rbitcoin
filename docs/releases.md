@@ -277,6 +277,10 @@ From current `origin/master` at `X.Y.99`:
    the `release.yml` run on the ship branch (`--ref` that branch).
 5. Merge, fetch, checkout `origin/vX.Y.x`, `./scripts/release-post.sh`
    (tags; does **not** create a new maint branch or a `.99` bump).
+6. PR → **`master`** that copies the new `## [X.Y.Z]` section from
+   `vX.Y.x` into `CHANGELOG.md`, below `## [Unreleased]` and above the
+   previous release. This is the one feature-branch `CHANGELOG.md` edit.
+   Without it the next minor's notes point at a section master lacks.
 
 ### Major (`do a major release`)
 
