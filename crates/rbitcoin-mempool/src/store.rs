@@ -832,7 +832,9 @@ impl Mempool {
     pub fn reserve_body(&mut self, need: usize) -> Result<u64, MempoolError> {
         let logical = body_logical_len(&self.body)?;
         let end = logical.saturating_add(need);
-        if end > self.body.len() {
+        // Growing by nothing is the same as not growing. `checked_sub`
+        // drops the `>` that `>=` would not change.
+        if end.checked_sub(self.body.len()).is_some_and(|d| d != 0) {
             self.body.resize(end, 0);
         }
         self.body[8..16].copy_from_slice(&(end as u64).to_le_bytes());

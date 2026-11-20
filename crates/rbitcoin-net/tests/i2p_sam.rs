@@ -984,6 +984,8 @@ struct FakeRouter {
     generation: Arc<tokio::sync::watch::Sender<u64>>,
     up: Arc<std::sync::atomic::AtomicBool>,
     refuse_forwards: Arc<std::sync::atomic::AtomicBool>,
+    refuse_creates: Arc<std::sync::atomic::AtomicBool>,
+    refuse_streams: Arc<std::sync::atomic::AtomicBool>,
     flaps: Arc<std::sync::atomic::AtomicUsize>,
     created_at: Arc<Mutex<Vec<tokio::time::Instant>>>,
     turned_away_at: Arc<Mutex<Vec<tokio::time::Instant>>>,
@@ -1000,6 +1002,8 @@ impl FakeRouter {
         let generation = Arc::new(tokio::sync::watch::Sender::new(0u64));
         let up = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let refuse_forwards = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let refuse_creates = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let refuse_streams = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flaps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let created_at = Arc::new(Mutex::new(Vec::new()));
         let turned_away_at = Arc::new(Mutex::new(Vec::new()));
@@ -1017,6 +1021,8 @@ impl FakeRouter {
             Arc::clone(&refuse_forwards),
             Arc::clone(&flaps),
         );
+        let (refuse_create_a, refuse_stream_a) =
+            (Arc::clone(&refuse_creates), Arc::clone(&refuse_streams));
         tokio::spawn(async move {
             while let Ok((mut s, _)) = listener.accept().await {
                 if !up_a.load(Ordering::SeqCst) {
@@ -1030,6 +1036,8 @@ impl FakeRouter {
                     Arc::clone(&refuse_a),
                     Arc::clone(&flap_a),
                 );
+                let (refuse_create, refuse_stream) =
+                    (Arc::clone(&refuse_create_a), Arc::clone(&refuse_stream_a));
                 let (created, seen) = (Arc::clone(&created_a), Arc::clone(&seen_a));
                 let mut restarted = gen_a.subscribe();
                 restarted.borrow_and_update();
@@ -1052,6 +1060,10 @@ impl FakeRouter {
                         if up.starts_with("SESSION CREATE") {
                             created.lock().unwrap().push(tokio::time::Instant::now());
                             seen.notify_one();
+                            if refuse_create.load(Ordering::SeqCst) {
+                                let _ = write_line(&mut s, "SESSION STATUS RESULT=I2P_ERROR").await;
+                                continue;
+                            }
                             live.lock().unwrap().insert(id);
                             let dest = sam_kv(&line, "DESTINATION").unwrap_or("TRANSIENT");
                             let dest = if dest.eq_ignore_ascii_case("TRANSIENT") {
@@ -1066,6 +1078,11 @@ impl FakeRouter {
                             .await;
                         } else if up.starts_with("STREAM FORWARD") && refuse.load(Ordering::SeqCst)
                         {
+                            break;
+                        } else if up.starts_with("STREAM CONNECT")
+                            && refuse_stream.load(Ordering::SeqCst)
+                        {
+                            let _ = write_line(&mut s, "STREAM STATUS RESULT=I2P_ERROR").await;
                             break;
                         } else if live.lock().unwrap().contains(&id) {
                             let _ = write_line(&mut s, "STREAM STATUS RESULT=OK").await;
@@ -1094,6 +1111,8 @@ impl FakeRouter {
             generation,
             up,
             refuse_forwards,
+            refuse_creates,
+            refuse_streams,
             flaps,
             created_at,
             turned_away_at,
@@ -1222,6 +1241,76 @@ async fn a_half_rebuilt_i2p_session_is_not_announced() {
         peers.announced_p2p_i2p() == Some(our_i2p())
     })
     .await;
+    clear_installed();
+}
+
+#[tokio::test]
+async fn a_live_session_does_not_rebuild_on_i2p_error() {
+    use std::sync::atomic::Ordering;
+    let _gate = INSTALL_GATE.lock().await;
+    clear_installed();
+    let router = FakeRouter::start().await;
+    let sam = I2pSam::connect_session(router.addr, Some("savedkey"), SAM_RETRY_TEST)
+        .await
+        .unwrap();
+    let _keeper = I2pKeeper::spawn(sam, I2pRole::Dial, FAST);
+    router.refuse_streams.store(true, Ordering::SeqCst);
+    let peer = rbitcoin_net::NetAddr::I2p {
+        dest: [0u8; 32],
+        port: 0,
+    };
+    let err = rbitcoin_net::socks::Dialer::Direct
+        .connect_net(peer)
+        .await
+        .expect_err("I2P_ERROR");
+    assert!(
+        err.to_string().to_ascii_uppercase().contains("I2P_ERROR"),
+        "{err}"
+    );
+    let creates = router.lines("SESSION CREATE");
+    assert_eq!(
+        creates.len(),
+        1,
+        "a reachable session is not rebuilt: {creates:?}"
+    );
+    clear_installed();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_rebuild_from_a_dead_dial_waits_the_backoff() {
+    use std::sync::atomic::Ordering;
+    let _gate = INSTALL_GATE.lock().await;
+    clear_installed();
+    let router = FakeRouter::start().await;
+    let sam = I2pSam::connect_session(router.addr, Some("savedkey"), SAM_RETRY_TEST)
+        .await
+        .unwrap();
+    let backoff = I2pBackoff {
+        first: STEP,
+        max: STEP * 10,
+    };
+    let _keeper = I2pKeeper::spawn(sam, I2pRole::Dial, backoff);
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    router.live.lock().unwrap().clear();
+    router.refuse_creates.store(true, Ordering::SeqCst);
+    let peer = rbitcoin_net::NetAddr::I2p {
+        dest: [0u8; 32],
+        port: 0,
+    };
+    let _ = rbitcoin_net::socks::Dialer::Direct.connect_net(peer).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        router.created_at.lock().unwrap().len(),
+        2,
+        "a failed rebuild must wait before the next try"
+    );
+    tokio::time::advance(STEP).await;
+    let created = tries(&router, &router.created_at, 3).await;
+    assert_eq!(created.len(), 3);
     clear_installed();
 }
 

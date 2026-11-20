@@ -55,7 +55,14 @@ fn decode_permit_pools_are_wider_than_one_slot() {
         ctrl <= pool,
         "header decodes cannot exceed the pool, got {ctrl}"
     );
-    assert!(ctrl >= 1);
+    assert!(
+        ctrl >= MIN_BLOCKING_POOL,
+        "ctrl permits follow the pool floor, got {ctrl}"
+    );
+    assert_eq!(
+        ctrl,
+        ctrl_decode_permits_for(std::thread::available_parallelism().ok().map(|n| n.get()))
+    );
 }
 
 #[test]

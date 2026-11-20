@@ -254,6 +254,162 @@ fn a_record_that_stops_short_is_refreshed() {
     );
 }
 
+/// Header walk reads the split after `note_headers`. A reply that does not
+/// connect leaves a lower split where it was.
+#[test]
+fn a_stray_reply_above_keeps_a_lower_split() {
+    let ours = chain(6, 0x5c);
+    let side = chain(2, 0x77);
+    let path: HashMap<u32, BlockHash> = (1..).zip(ours.iter().map(|h| h.block_hash())).collect();
+    let mut peer = PeerChain::default();
+    peer.note_headers(&path, |_| None, 0, 1, &side[..1]);
+    let stray = Header {
+        prev_blockhash: BlockHash::from_byte_array([3u8; 32]),
+        ..side[1]
+    };
+    peer.note_headers(&path, |_| None, 0, 5, &[stray]);
+    assert!(
+        peer.left_path_by(&path, 1),
+        "a reply that does not connect leaves the lower split"
+    );
+}
+
+/// Header walk's off-path split stays when a later reply starts at that
+/// height and the block is no longer one this node has.
+#[test]
+fn a_reply_at_the_split_keeps_it_once_the_block_is_gone() {
+    let ours = chain(4, 0x5c);
+    let side = chain(1, 0x77);
+    let path: HashMap<u32, BlockHash> = HashMap::new();
+    let hashes: Vec<BlockHash> = ours.iter().map(|h| h.block_hash()).collect();
+    let stray = Header {
+        prev_blockhash: ours[1].block_hash(),
+        ..side[0]
+    };
+    let mut peer = PeerChain::default();
+    peer.note_headers(
+        &path,
+        |h| (h <= 3).then(|| hashes[h as usize - 1]),
+        3,
+        3,
+        &[stray],
+    );
+    peer.note_headers(
+        &path,
+        |h| (h <= 2).then(|| hashes[h as usize - 1]),
+        2,
+        3,
+        &[ours[2]],
+    );
+    assert!(
+        peer.left_path_by(&path, 3),
+        "the split is still where the peer left, after that block is gone"
+    );
+}
+
+/// Agreeing at the recorded split clears it. Leaving on the next block
+/// records that height, so the peer still has the block below.
+#[test]
+fn agreeing_at_the_split_then_leaving_records_the_new_one() {
+    let ours = chain(4, 0x5c);
+    let side = chain(2, 0x77);
+    let path: HashMap<u32, BlockHash> = (1..).zip(ours.iter().map(|h| h.block_hash())).collect();
+    let mut peer = PeerChain::default();
+    peer.note_headers(&path, |_| None, 0, 2, &side[..1]);
+    let leaving = Header {
+        prev_blockhash: ours[1].block_hash(),
+        ..side[1]
+    };
+    peer.note_headers(&path, |_| None, 0, 2, &[ours[1], leaving]);
+    assert!(
+        !peer.left_path_by(&path, 2),
+        "it has this node's block at the old split"
+    );
+    assert!(peer.left_path_by(&path, 3));
+}
+
+/// A disagreement below a higher split moves the split down. Block fetch
+/// then skips that peer from the lower height.
+#[test]
+fn a_lower_disagreement_moves_the_split_down() {
+    let ours = chain(6, 0x5c);
+    let side = chain(6, 0x77);
+    let path: HashMap<u32, BlockHash> = (1..).zip(ours.iter().map(|h| h.block_hash())).collect();
+    let mut first = ours[..4].to_vec();
+    first.push(side[4]);
+    let mut peer = PeerChain::default();
+    peer.note_headers(&path, |_| None, 0, 1, &first);
+    let lower = Header {
+        prev_blockhash: BlockHash::from_byte_array([1u8; 32]),
+        ..side[1]
+    };
+    peer.note_headers(&path, |_| None, 6, 2, &[lower]);
+    assert!(
+        peer.left_path_by(&path, 2),
+        "the split moved down to the disagreement"
+    );
+}
+
+/// Block fetch asks a peer that `shows` a height. A short reply at or below
+/// the tip drops a kept run that sat above the tip.
+#[test]
+fn a_short_reply_below_the_tip_drops_the_kept_run() {
+    let headers = chain(12, 0x5c);
+    let path: HashMap<u32, BlockHash> = (1..).zip(headers.iter().map(|h| h.block_hash())).collect();
+    let mut peer = PeerChain::default();
+    peer.note_headers(&path, |_| None, 0, 10, &headers[9..10]);
+    assert!(peer.shows(&path, 10));
+    peer.note_headers(&path, |_| None, 5, 3, &headers[2..3]);
+    assert!(
+        !peer.shows(&path, 3),
+        "the short reply dropped the run above the tip"
+    );
+}
+
+/// Block fetch treats `left_path_by` as the peer missing that block. A record
+/// whose first hash is not the path block there has left, including when the
+/// path gained that block after the reply.
+#[test]
+fn a_different_hash_at_the_record_start_has_left() {
+    let headers = chain(1, 0x5c);
+    let mut path = HashMap::new();
+    let mut peer = PeerChain::default();
+    peer.note_headers(&path, |_| None, 0, 10, &headers);
+    path.insert(10, BlockHash::from_byte_array([9u8; 32]));
+    assert!(
+        peer.left_path_by(&path, 10),
+        "the announced hash is not this node's block"
+    );
+}
+
+/// Block fetch skips a peer that lacks the hash. A full table of 1024 drops
+/// an expired row before it takes a new one, and it does not grow past that.
+#[test]
+fn a_full_notfound_table_drops_expired_and_refuses_a_fresh_extra() {
+    let mut peer = PeerChain::default();
+    let old = BlockHash::from_byte_array([0x01; 32]);
+    peer.note_notfound(old, 0);
+    let mut recent = Vec::new();
+    for i in 0..1023u32 {
+        let mut bytes = [0x02u8; 32];
+        bytes[..4].copy_from_slice(&i.to_le_bytes());
+        let hash = BlockHash::from_byte_array(bytes);
+        peer.note_notfound(hash, 20_000);
+        recent.push(hash);
+    }
+    let fresh = BlockHash::from_byte_array([0x03; 32]);
+    peer.note_notfound(fresh, 30_000);
+    assert!(
+        peer.lacks(&fresh, 30_000),
+        "an expired row gives up its seat"
+    );
+    assert!(peer.lacks(&recent[0], 30_000));
+    assert!(!peer.lacks(&old, 30_000));
+    let extra = BlockHash::from_byte_array([0x04; 32]);
+    peer.note_notfound(extra, 30_000);
+    assert!(!peer.lacks(&extra, 30_000), "1024 live rows is the cap");
+}
+
 /// A `notfound` keeps a peer off that block for one stall window, then the
 /// peer may be asked again.
 #[test]

@@ -8126,3 +8126,599 @@ fn the_walk_clock_follows_the_node_clock() {
     assert!(!st.header_walk.clock_refused);
     let _ = gen_hdr;
 }
+
+fn hw_checkpoint(hash: BlockHash, height: u32) -> Checkpoint {
+    Checkpoint {
+        hash,
+        height,
+        height_wide: u64::from(height),
+        work: [0; 32],
+        header: None,
+        times: Vec::new(),
+        diff: DiffSnap::default(),
+        supplied_by: None,
+    }
+}
+
+/// A linked header that stops short of the checkpoint is not a miss, so the
+/// walk keeps the checkpoint. Deleting `!` rewinds it.
+#[test]
+fn hw_pin_a_short_refill_keeps_the_checkpoint() {
+    let (_dir, hub, mut st, gen) = opened("hw-short-refill", false);
+    let cp = BlockHash::from_byte_array([0x11; 32]);
+    st.header_walk.checkpoints.push(hw_checkpoint(cp, 10));
+    st.header_walk.proven = false;
+    let hdr = mine(gen.block_hash(), 1);
+    assert!(!judge_refill(&mut st, &hub, 0, &[hdr]));
+    assert_eq!(st.header_walk.checkpoints.len(), 1);
+}
+
+/// A different hash at the checkpoint height is a miss. `==` to `!=` on the
+/// height, or `!=` to `==` on the hash, reports no miss.
+#[test]
+fn hw_pin_a_wrong_checkpoint_hash_is_a_miss() {
+    let (_dir, _hub, mut st, gen) = opened("hw-checkpoint-miss", false);
+    let hdr = mine(gen.block_hash(), 1);
+    st.header_walk
+        .checkpoints
+        .push(hw_checkpoint(BlockHash::from_byte_array([0x22; 32]), 1));
+    assert!(refill_misses_checkpoint(&st, 0, &[hdr]));
+}
+
+/// The milestone header is recorded only at the milestone height.
+#[test]
+fn hw_pin_the_milestone_height_records_the_header() {
+    let (_dir, mut hub, mut st, gen) = opened("hw-milestone-height", false);
+    hub.milestone = rbitcoin_consensus::Milestone::height(1);
+    st.header_walk.tip.height = 1;
+    st.header_walk.tip.hash = Some(gen.block_hash());
+    remember_milestone(&mut st.header_walk.tip, &hub, gen.prev_blockhash, &gen);
+    assert_eq!(st.header_walk.milestone_hash(), Some(gen.block_hash()));
+}
+
+/// A matching anchor records checkpoint work. `!=` to `==` returns first.
+#[test]
+fn hw_pin_a_matching_anchor_records_checkpoint_work() {
+    let (_dir, mut hub, mut st, _gen) = opened("hw-anchor-work", false);
+    let anchor = BlockHash::from_byte_array([0x44; 32]);
+    hub.milestone = rbitcoin_consensus::Milestone {
+        height: 1,
+        anchor: Some(rbitcoin_consensus::MilestoneAnchor {
+            hash: anchor,
+            min_work_be: [0; 32],
+        }),
+    };
+    st.header_walk.proven = false;
+    st.header_walk.report_epoch = None;
+    st.header_walk.tip.height = 1;
+    st.header_walk.tip.milestone_hash = Some(anchor);
+    st.header_walk.tip.work = Work::from_be_bytes([0; 32]);
+    publish_work(&mut st, &hub);
+    let path = hub.query.milestone_path_lock();
+    assert!(path.work_valid, "matching anchor records checkpoint work");
+    assert_eq!(path.work_height, 1);
+}
+
+/// At or above the milestone, the remembered header stays. `||` to `&&`
+/// clears it.
+#[test]
+fn hw_pin_a_milestone_at_the_floor_is_kept() {
+    let (_dir, mut hub, mut st, _gen) = opened("hw-milestone-keep", false);
+    hub.milestone = rbitcoin_consensus::Milestone::height(10);
+    let hash = BlockHash::from_byte_array([0x55; 32]);
+    st.header_walk.tip.milestone_hash = Some(hash);
+    forget_milestone_below(&mut st, &hub, 10);
+    assert_eq!(st.header_walk.milestone_hash(), Some(hash));
+}
+
+/// A lane still inside its ask window is fresh.
+#[test]
+fn hw_pin_a_live_ask_is_fresh() {
+    let lane = Lane {
+        peer: Some(1),
+        at: Some(Instant::now()),
+        prev_peer: None,
+    };
+    assert_eq!(fresh_mark(&lane).map(|m| m.0), Some(1));
+}
+
+/// The pause moves only the ask that was captured. A different peer, or a
+/// different start, stays put. `&&` to `||` moves the peer match alone.
+#[test]
+fn hw_pin_hold_moves_only_the_captured_ask() {
+    let start = Instant::now();
+    let paused = Duration::from_secs(2);
+    let mut same = Lane {
+        peer: Some(1),
+        at: Some(start),
+        prev_peer: None,
+    };
+    hold_mark(&mut same, Some((1, start)), paused);
+    assert_eq!(same.at, start.checked_add(paused));
+
+    let mut other_at = Lane {
+        peer: Some(1),
+        at: Some(start + paused),
+        prev_peer: None,
+    };
+    hold_mark(&mut other_at, Some((1, start)), paused);
+    assert_eq!(other_at.at, Some(start + paused));
+
+    let mut other_peer = Lane {
+        peer: Some(2),
+        at: Some(start),
+        prev_peer: None,
+    };
+    hold_mark(&mut other_peer, Some((1, start)), paused);
+    assert_eq!(other_peer.at, Some(start));
+}
+
+/// Clearing the asked peer drops that lane. Another peer stays.
+#[test]
+fn hw_pin_clearing_the_asked_peer_drops_the_lane() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-clear-ask", false);
+    st.header_walk.walk.peer = Some(1);
+    st.header_walk.walk.at = Some(Instant::now());
+    clear_peer_ask(&mut st, 1);
+    assert!(st.header_walk.walk.peer.is_none());
+}
+
+/// The first header miss drops a reservation on that peer.
+#[test]
+fn hw_pin_a_miss_drops_the_reserved_peer() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-expire-reserved", false);
+    st.header_walk.walk.peer = Some(0);
+    st.header_walk.reserved = Some(0);
+    assert_eq!(expire_header_ask(&mut st), Some(0));
+    assert!(st.header_walk.reserved.is_none());
+}
+
+/// A new ask remembers the peer it replaced.
+#[test]
+fn hw_pin_a_new_ask_keeps_the_previous_peer() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-note-lane", false);
+    st.header_walk.walk.peer = Some(0);
+    note_lane(&mut st, 1);
+    assert_eq!(st.header_walk.walk.prev_peer, Some(0));
+    assert_eq!(st.header_walk.walk.peer, Some(1));
+}
+
+/// A dead peer is not asked, even with a better time-to-first-byte.
+#[test]
+fn hw_pin_a_dead_peer_is_not_asked() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-dead-peer", false);
+    st.slots[0].alive = false;
+    st.slots[0].first_data_ms = 10;
+    st.slots[1].first_data_ms = 0;
+    assert_eq!(pick_any_header_peer(&st, None), Some(1));
+}
+
+/// A quiet peer waits behind one who is still on the walk.
+#[test]
+fn hw_pin_a_quiet_peer_waits() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-quiet-peer", false);
+    st.slots[0].first_data_ms = 10;
+    st.header_walk.walk_quiet.insert(0);
+    st.slots[1].first_data_ms = 0;
+    assert_eq!(pick_any_header_peer(&st, None), Some(1));
+}
+
+/// The only remaining peer is asked after its own miss when it is still live
+/// and not quiet. A dead miss is not asked.
+#[test]
+fn hw_pin_the_only_live_peer_is_asked_after_its_miss() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-only-live", false);
+    st.slots.pop();
+    assert_eq!(pick_any_header_peer(&st, Some(0)), Some(0));
+    st.slots[0].alive = false;
+    assert_eq!(pick_any_header_peer(&st, Some(0)), None);
+}
+
+/// A reserved peer who cannot head the walk gives way. The skipped peer
+/// gives way when someone else can.
+#[test]
+fn hw_pin_a_reserved_peer_who_cannot_head_gives_way() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-reserved-gives", false);
+    st.slots[0].peer_height = 0;
+    st.slots[0].first_data_ms = 10;
+    st.slots[1].first_data_ms = 50;
+    st.header_walk.reserved = Some(0);
+    ensure_reserved(&mut st, 1, None);
+    assert_eq!(st.header_walk.reserved, Some(1));
+
+    st.slots[0].peer_height = 50_000;
+    st.slots[0].first_data_ms = 100;
+    st.slots[1].first_data_ms = 20;
+    st.header_walk.reserved = Some(0);
+    ensure_reserved(&mut st, 1, Some(0));
+    assert_eq!(
+        st.header_walk.reserved,
+        Some(1),
+        "the peer whose ask just expired gives way to a faster one"
+    );
+}
+
+/// A live probe peer is taken. A dead one is not.
+#[test]
+fn hw_pin_a_live_probe_peer_is_taken() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-take-probe", false);
+    st.header_walk.probe = Some(0);
+    assert_eq!(take_probe(&mut st), Some(0));
+    st.header_walk.probe = Some(0);
+    st.slots[0].alive = false;
+    assert_eq!(take_probe(&mut st), None);
+}
+
+/// A live challenge peer is taken. A dead one, and a quiet one, are not.
+#[test]
+fn hw_pin_a_live_challenge_peer_is_taken() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-take-challenge", false);
+    st.header_walk.challenge = Some(0);
+    assert_eq!(take_challenge(&mut st), Some(0));
+    st.header_walk.challenge = Some(0);
+    st.slots[0].alive = false;
+    assert_eq!(take_challenge(&mut st), None);
+    st.slots[0].alive = true;
+    st.header_walk.walk_quiet.insert(0);
+    st.header_walk.challenge = Some(0);
+    assert_eq!(take_challenge(&mut st), None);
+}
+
+fn hw_supplier() -> rbitcoin_net::NetAddr {
+    rbitcoin_net::NetAddr::from_socket(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+        8333,
+    ))
+}
+
+fn hw_child(parent: &Header, time: u32, salt: u8) -> Header {
+    let mut h = Header {
+        version: bitcoin::block::Version::from_consensus(4),
+        prev_blockhash: parent.block_hash(),
+        merkle_root: TxMerkleNode::from_byte_array([salt; 32]),
+        time,
+        bits: CompactTarget::from_consensus(0x207fffff),
+        nonce: 0,
+    };
+    rbitcoin_consensus::grind_regtest_pow(&mut h);
+    h
+}
+
+/// A cut back to a stored fork keeps that fork's work, header, timestamps,
+/// difficulty, and the milestone the walk had already recorded.
+#[test]
+fn hw_pin_a_cut_back_keeps_the_fork_anchor() {
+    let (_dir, mut hub, mut st, gen) = opened("hw-cut-back", false);
+    let prev = byte_hash(3);
+    let mut mark = mark_checkpoint(prev, 5);
+    let mut raw = [0u8; 32];
+    raw[31] = 7;
+    mark.work = raw;
+    mark.header = Some(gen);
+    mark.times = vec![4, 5, 6];
+    mark.diff.full_diff_bits = Some(CompactTarget::from_consensus(0x1d00ffff));
+    mark.diff.full_diff_height = 3;
+    st.header_walk.checkpoints.push(mark.clone());
+    st.hash_height.insert(prev, 5);
+    hub.milestone.height = 5;
+    let milestone_prev = byte_hash(9);
+    st.header_walk.tip.milestone_hash = Some(byte_hash(8));
+    st.header_walk.tip.milestone_prev = milestone_prev;
+    st.header_walk.tip.milestone_header = Some(gen);
+    adopt_heavier(&mut st, &hub, prev, &[], Work::from_be_bytes([0; 32]), None);
+    let tip = &st.header_walk.tip;
+    assert_eq!(tip.work, Work::from_be_bytes(raw));
+    assert_eq!(tip.header, Some(gen));
+    assert_eq!(tip.times, vec![4, 5, 6]);
+    assert_eq!(
+        tip.diff.full_diff_bits,
+        Some(CompactTarget::from_consensus(0x1d00ffff))
+    );
+    assert_eq!(tip.milestone_prev, milestone_prev);
+    assert_eq!(tip.milestone_header, Some(gen));
+}
+
+/// A stored successor does not cancel an owed probe.
+#[test]
+fn hw_pin_an_owed_probe_asks_past_a_stored_successor() {
+    let (_dir, hub, mut st, _gen) = opened("hw-owed-successor", false);
+    st.height_to_hash
+        .insert(1, BlockHash::from_byte_array([0x44; 32]));
+    st.header_walk.probe = Some(0);
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    assert!(st.header_walk.probe_open.is_some());
+}
+
+/// A probe at the confirmed tip asks from that tip, not after the path top.
+#[test]
+fn hw_pin_a_probe_at_the_tip_asks_from_the_tip() {
+    let (_dir, hub, mut st, _gen) = opened("hw-probe-at-tip", false);
+    st.header_walk.probe = Some(0);
+    assert!(arm_header_ask(&mut st, &hub).unwrap());
+    assert!(st.header_walk.probe_top.is_none());
+}
+
+/// Dropping the oldest timestamp keeps the next header inside the median.
+#[test]
+fn hw_pin_a_full_time_window_drops_the_oldest() {
+    let (_dir, hub, mut st, gen) = opened("hw-time-window", false);
+    let low = 10u32;
+    let high = 100u32;
+    st.header_walk.tip.times = vec![high, low, low, low, low, low, low, high, high, high, high];
+    let first = hw_child(&gen, 20, 1);
+    let second = hw_child(&first, 15, 2);
+    assert!(batch_context_ok(
+        &st,
+        &hub,
+        &[first, second],
+        &DiffSnap::default()
+    ));
+}
+
+/// Harder bits above the sampled header are not the min-difficulty limit
+/// when the sample itself is already the limit. A sample still on file blocks
+/// the min-difficulty fallback.
+#[test]
+fn hw_pin_harder_bits_above_the_sample_use_the_limit_only_then() {
+    let (_dir, hub, st, _gen) = opened("hw-lookahead-bits", false);
+    let limit = hub.params.pow_limit.to_compact_lossy();
+    let harder = CompactTarget::from_consensus(0x1d00ffff);
+    assert_ne!(harder, limit);
+    let at_limit = DiffSnap {
+        full_diff_bits: Some(limit),
+        full_diff_height: 3,
+        ..DiffSnap::default()
+    };
+    assert_eq!(lookahead_bits_at(&at_limit, &st, &hub, 4), None);
+    let sampled = DiffSnap {
+        full_diff_bits: Some(harder),
+        full_diff_height: 10,
+        ..DiffSnap::default()
+    };
+    assert_eq!(lookahead_bits_at(&sampled, &st, &hub, 4), None);
+}
+
+/// The walk tip's header wins at its height. The base header wins at the
+/// base height when the tip is somewhere else.
+#[test]
+fn hw_pin_header_on_store_prefers_the_walk_tip_then_the_base() {
+    let (_dir, hub, mut st, gen) = opened("hw-header-on-store", false);
+    let side = hw_child(&gen, gen.time.saturating_add(1), 3);
+    st.header_walk.tip.header = Some(side);
+    st.header_walk.tip.height = 0;
+    assert_eq!(
+        header_on_store(&st, &hub, 0).unwrap().block_hash(),
+        side.block_hash()
+    );
+    st.header_walk.tip.height = 5;
+    st.header_walk.tip.header = None;
+    st.header_walk.base_height = 0;
+    st.header_walk.base_hash = Some(side.block_hash());
+    hub.ensure_header(&side).unwrap();
+    assert_eq!(
+        header_on_store(&st, &hub, 0).unwrap().block_hash(),
+        side.block_hash()
+    );
+}
+
+/// A base hash the confirmed height does not hold is a conflict.
+#[test]
+fn hw_pin_a_base_the_confirmed_height_does_not_hold_conflicts() {
+    let (_dir, hub, mut st, _gen) = opened("hw-base-conflict", false);
+    let other = BlockHash::from_byte_array([0x22; 32]);
+    st.height_to_hash.insert(0, other);
+    let mut walk = HeaderWalk::default();
+    walk.base_height = 0;
+    walk.base_hash = Some(other);
+    assert!(base_conflicts(&st, &hub, &walk));
+}
+
+/// A witness at the fork height stays. One strictly above the base, and
+/// under the fork, stays. One sitting on the base does not.
+#[test]
+fn hw_pin_rewind_keeps_a_match_under_the_fork() {
+    let (_dir, mut hub, mut st, _gen) = opened("hw-settle-eq", false);
+    hub.milestone.height = 0;
+    st.header_walk.base_height = 0;
+    st.header_walk.witness_height = Some(5);
+    st.header_walk
+        .checkpoints
+        .push(mark_checkpoint(byte_hash(1), 4));
+    st.header_walk.checkpoints.last_mut().unwrap().supplied_by = Some(hw_supplier());
+    on_confirmed_rewind(&mut st, &hub, 5);
+    assert_eq!(st.header_walk.witness_height, Some(5));
+
+    st.header_walk.witness_height = Some(6);
+    on_confirmed_rewind(&mut st, &hub, 5);
+    assert_eq!(st.header_walk.witness_height, Some(4));
+
+    st.header_walk.checkpoints.clear();
+    st.header_walk.base_height = 3;
+    st.header_walk.witness_height = Some(6);
+    st.header_walk
+        .checkpoints
+        .push(mark_checkpoint(byte_hash(2), 3));
+    st.header_walk.checkpoints.last_mut().unwrap().supplied_by = Some(hw_supplier());
+    on_confirmed_rewind(&mut st, &hub, 5);
+    assert_eq!(st.header_walk.witness_height, None);
+}
+
+/// A reorg under the milestone drops the latched hash only after the walk
+/// has an origin. An empty milestone path does not receive that hash.
+#[test]
+fn hw_pin_rewind_drops_the_milestone_only_on_an_origin() {
+    let (_dir, mut hub, mut st, _gen) = opened("hw-rewind-origin", false);
+    let latched = byte_hash(4);
+    hub.milestone.height = 10;
+    st.header_walk.origin = false;
+    st.header_walk.base_hash = None;
+    st.header_walk.tip.milestone_hash = Some(latched);
+    on_confirmed_rewind(&mut st, &hub, 5);
+    assert_eq!(st.header_walk.tip.milestone_hash, Some(latched));
+
+    st.header_walk.origin = true;
+    st.header_walk.tip.milestone_hash = Some(latched);
+    assert!(!hub.query.has_milestone_path());
+    on_confirmed_rewind(&mut st, &hub, 10);
+    assert!(!hub.query.has_milestone_path());
+}
+
+fn hw_retire_at(label: &str, blocks: u32, milestone: u32, min_work: Option<[u8; 32]>) -> bool {
+    let (_dir, mut hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled(label);
+    hub.ensure_genesis().unwrap();
+    hub.confirm_empty_regtest(blocks).unwrap();
+    let min_work = min_work.unwrap_or_else(|| hub.chain_work().unwrap().to_be_bytes());
+    let rec = hub
+        .query
+        .header_at_height(rbitcoin_primitives::Height(milestone))
+        .unwrap()
+        .unwrap()
+        .1;
+    hub.milestone = rbitcoin_consensus::Milestone {
+        height: milestone,
+        anchor: Some(rbitcoin_consensus::MilestoneAnchor {
+            hash: BlockHash::from_byte_array(rec.hash),
+            min_work_be: min_work,
+        }),
+    };
+    let (peer, _rx) = slot(0);
+    let mut st = IbdWorkState::new(vec![peer], hub.tip_hash(), hub.tip_height());
+    retire_adopt_if_confirmed(&mut st, &hub);
+    st.header_walk.adopt_retired
+}
+
+/// The confirmed chain at the milestone, with work equal to the anchor,
+/// retires the adopt file.
+#[test]
+fn hw_pin_the_milestone_block_retires_the_adopt_file() {
+    assert!(hw_retire_at("hw-retire-equal", 1, 1, None));
+}
+
+/// A tip past the milestone, with more work than the anchor, retires it too.
+#[test]
+fn hw_pin_a_later_tip_retires_the_adopt_file() {
+    assert!(hw_retire_at("hw-retire-later", 2, 1, Some([0u8; 32])));
+}
+
+/// A stored failure whose height is the saved base is not above that base.
+#[test]
+fn hw_pin_a_failure_at_the_saved_base_keeps_the_resume() {
+    let (_dir, hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("hw-fail-at-base");
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let b1 = mine_block(gen, 1);
+    hub.accept_block(b1.clone()).unwrap();
+    let b2 = mine_block(b1.block_hash(), 2);
+    hub.accept_block(b2.clone()).unwrap();
+    let side = mine(b1.block_hash(), 64);
+    hub.ensure_header(&side).unwrap();
+    let (peer, _rx) = slot(3);
+    let mut st = IbdWorkState::new(vec![peer], hub.tip_hash(), hub.tip_height());
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    let q3 = mine(b2.block_hash(), 65);
+    let q4 = mine(q3.block_hash(), 66);
+    apply(&mut st, &hub, 3, vec![q3, q4]);
+    save_adopt(&mut st, &hub);
+    assert!(hub.note_failed_connect(side.block_hash()));
+    st.header_walk = HeaderWalk::default();
+    assert!(restore_adopt(&mut st, &hub));
+}
+
+/// An unproved resume restarts when the next header is already stored.
+#[test]
+fn hw_pin_an_unproved_resume_restarts_when_the_next_header_is_stored() {
+    let (_dir, mut hub) = rbitcoin_net::chain::tiny_regtest_hub_labeled("hw-unproved-resume");
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let (peer, _rx) = slot(4);
+    let mut st = IbdWorkState::new(vec![peer], Some(gen), Some(0));
+    assert!(send_getheaders(&mut st, &hub).unwrap());
+    let h1 = mine(gen, 71);
+    let h2 = mine(h1.block_hash(), 72);
+    apply(&mut st, &hub, 4, vec![h1, h2]);
+    save_adopt(&mut st, &hub);
+    assert!(st.header_walk.tip_height() > 0);
+    hub.milestone = floor_milestone(1_000_000);
+    st.header_walk = HeaderWalk::default();
+    assert!(restore_adopt(&mut st, &hub));
+    assert!(!st.header_walk.proven);
+    let next = st.header_walk.tip_height().saturating_add(1);
+    st.height_to_hash
+        .insert(next, BlockHash::from_byte_array([0x61; 32]));
+    assert!(rbitcoin_ibd::ibd::path::walk_successor_indexed(&st, &hub));
+    assert!(send_getheaders(&mut st, &hub).is_ok());
+    assert!(
+        st.header_walk.checkpoints.is_empty(),
+        "a stored successor drops the unproved candidate"
+    );
+}
+
+/// A proved walk does not add Class A bytes. The matched height does not either.
+#[test]
+fn hw_pin_class_a_starts_above_the_match() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-class-a", false);
+    st.header_walk.origin = true;
+    st.header_walk.proven = true;
+    st.header_walk.base_height = 0;
+    note_unproven_class_a(&mut st, 1, 9);
+    assert!(st.header_walk.lead_class_a.is_empty());
+
+    st.header_walk.proven = false;
+    st.header_walk.base_height = 4;
+    note_unproven_class_a(&mut st, 4, 9);
+    assert!(st.header_walk.lead_class_a.is_empty());
+}
+
+/// A short linked batch is not a second witness.
+#[test]
+fn hw_pin_a_short_linked_batch_is_not_a_witness() {
+    let (_dir, hub, mut st, gen) = opened("hw-witness-short", false);
+    st.header_walk.proven = false;
+    st.header_walk.origin = true;
+    let hdr = mine(gen.block_hash(), 81);
+    let mut mark = mark_checkpoint(hdr.block_hash(), 1);
+    mark.supplied_by = Some(hw_supplier());
+    st.header_walk.checkpoints.push(mark);
+    note_header_witness(&mut st, &hub, 0, HeaderAsk::InWindow, &[hdr], true);
+    assert!(st.header_walk.witness_height.is_none());
+}
+
+/// The four-thousandth new off-path header is still inside the budget.
+/// One more is over it, and that header is counted.
+#[test]
+fn hw_pin_off_path_budget_counts_the_header_that_crosses_it() {
+    let (_dir, mut hub, mut st, _gen) = opened("hw-off-path", false);
+    hub.milestone = floor_milestone(1_000_000);
+    st.header_walk.proven = false;
+    for n in 0..OFF_PATH_HEADER_BUDGET - 1 {
+        let mut raw = [0u8; 32];
+        raw[..4].copy_from_slice(&n.to_le_bytes());
+        assert!(!note_off_path(
+            &mut st,
+            &hub,
+            0,
+            BlockHash::from_byte_array(raw)
+        ));
+    }
+    let mut at_budget = [0u8; 32];
+    at_budget[4] = 1;
+    let at_budget = BlockHash::from_byte_array(at_budget);
+    assert!(!note_off_path(&mut st, &hub, 0, at_budget));
+    assert!(st.header_walk.off_path[&0].contains(&at_budget));
+    let mut over = [0u8; 32];
+    over[4] = 2;
+    let over = BlockHash::from_byte_array(over);
+    assert!(note_off_path(&mut st, &hub, 0, over));
+    assert!(st.header_walk.off_path[&0].contains(&over));
+}
+
+/// The first stored header above the tip publishes confirmed work through it.
+#[test]
+fn hw_pin_the_first_stored_header_publishes_tip_work() {
+    let (_dir, hub, mut st, gen) = opened("hw-renote-work", false);
+    let child = mine(gen.block_hash(), 91);
+    hub.ensure_header(&child).unwrap();
+    st.height_to_hash.insert(1, child.block_hash());
+    renote_stored_path(&st, &hub);
+    assert!(hub.query.milestone_best_work_be().is_some());
+}

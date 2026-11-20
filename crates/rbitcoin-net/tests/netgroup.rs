@@ -84,6 +84,63 @@ fn netgroup_henet_slash36() {
     );
 }
 
+/// `::1` is not an IPv4-mapped address, and a NAT64 prefix with a non-zero
+/// middle is not a linked IPv4. Both halves of each check have to hold.
+#[test]
+fn linked_halves_both_have_to_hold() {
+    assert_ne!(netgroup(v6("::1"), None), netgroup(v4(0, 0, 0, 1), None));
+    assert_ne!(
+        netgroup(v6("64:ff9b:1::45.1.0.2"), None),
+        netgroup(v4(45, 1, 0, 2), None)
+    );
+}
+
+/// Inbound eviction pauses on this key (`Peers::note_slot_evict`). A linked
+/// IPv4 pauses on that IPv4 `/16`. CJDNS pauses on its `/32`, not the
+/// sixteen overlay groups used to pick a victim.
+#[test]
+fn slot_pause_uses_the_linked_ipv4_key() {
+    let mapped = v6("::ffff:45.1.0.2");
+    assert_eq!(slot_pause_group(mapped), netgroup(mapped, None));
+    assert_eq!(slot_pause_group(mapped), netgroup(v4(45, 1, 0, 1), None));
+    let cjdns = v6("fc10::1");
+    assert_ne!(slot_pause_group(cjdns), netgroup(cjdns, None));
+    assert_eq!(
+        slot_pause_group(cjdns),
+        slot_pause_group(v6("fc10:0:ffff::1"))
+    );
+    assert_ne!(slot_pause_group(cjdns), slot_pause_group(v6("fc11::1")));
+}
+
+/// Overlay class bit is `1 << 32`. CJDNS nibble 1 is that bit plus network
+/// 6, not the IPv4 `6.1/16` key. Onion, I2P, and a proxy name keep their
+/// own network byte. Seeds dial through `netgroup_net`.
+#[test]
+fn overlay_class_bit_keeps_cjdns_off_the_ipv4_key() {
+    use rbitcoin_net::NetAddr;
+    let class = 1u64 << 32;
+    assert_eq!(netgroup(v6("fc10::1"), None), class + (6 << 8) + 1);
+    assert_eq!(netgroup(v6("fc20::1"), None), class + (6 << 8) + 2);
+    assert_ne!(
+        netgroup(v6("fc10::1"), None),
+        netgroup(v4(6, 1, 0, 1), None)
+    );
+    let onion = |b: u8| NetAddr::Onion {
+        pk: [b; 32],
+        port: 8333,
+    };
+    assert_eq!(netgroup_net(onion(0x10), None), class + (4 << 8) + 1);
+    assert_eq!(netgroup_net(onion(0x00), None), class + (4 << 8));
+    let i2p = |b: u8| NetAddr::I2p {
+        dest: [b; 32],
+        port: 8333,
+    };
+    assert_eq!(netgroup_net(i2p(0x10), None), class + (5 << 8) + 1);
+    assert_eq!(netgroup_net(i2p(0xf0), None), class + (5 << 8) + 0xf);
+    let name = NetAddr::name("proxy.example", 8333).unwrap();
+    assert_eq!(netgroup_net(name, None), class + (u64::from(u8::MAX) << 8));
+}
+
 /// Core keys CJDNS by the four bits after the constant `fc` byte, as Tor
 /// and I2P by their first four bits, not by /32.
 #[test]

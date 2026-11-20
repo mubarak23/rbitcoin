@@ -76,4 +76,6 @@ fn adopt_diff_and_times_roundtrip_and_reject_short() {
     write_times(&mut times, &[11, 22]);
     assert_eq!(read_times(&times), Some(vec![11, 22]));
     assert!(read_times(&[1]).is_none());
+    // One byte under the median-time window. Adopt resume reads this.
+    assert!(read_times(&times[..44]).is_none());
 }

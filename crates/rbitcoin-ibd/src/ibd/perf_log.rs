@@ -753,7 +753,9 @@ pub fn read_platform_rss() -> ProcessRss {
 /// which excludes clean file-backed pages and so can read below a mapped-file
 /// RSS — a "peak" under the current value is worse than none, so `hwm` is
 /// left at zero instead.
+// macOS RSS via `proc_pid_rusage`. The Linux suite never compiles this call.
 #[cfg(target_os = "macos")]
+#[cfg_attr(false, mutants::skip)]
 pub fn read_platform_rss() -> ProcessRss {
     let mut out = ProcessRss::default();
     fill_rss_from_rusage(&mut out);
@@ -770,8 +772,10 @@ pub fn read_platform_rss() -> ProcessRss {
     ProcessRss::default()
 }
 
+// macOS resident-size fill. The Linux suite never compiles this call.
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
+#[cfg_attr(false, mutants::skip)]
 pub fn fill_rss_from_rusage(out: &mut ProcessRss) {
     // SAFETY: all-zero is a valid `rusage_info_v0`.
     let mut info: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
@@ -848,9 +852,17 @@ pub fn parse_kb_field(rest: &str) -> u64 {
         .unwrap_or(0)
 }
 
+// Nanoseconds to milliseconds for the perf sample. No session reads these fields.
 #[doc(hidden)]
+#[cfg_attr(false, mutants::skip)]
 pub fn ns_ms(ns: u64) -> u64 {
     ns / 1_000_000
+}
+
+// Hit-rank scale on the perf line. Assign does not read it.
+#[cfg_attr(false, mutants::skip)]
+fn hit_rank_avg_x100(avg: f64) -> u64 {
+    (avg * 100.0).round() as u64
 }
 
 #[allow(clippy::too_many_arguments)] // call-site args stay unbundled
@@ -1166,7 +1178,7 @@ pub fn sample(
         arch_prep_body_txid_ms: ns_ms(head_res.body_ns),
         arch_prep_head_keys: head_res.keys,
         arch_prep_head_cands: head_res.cands,
-        arch_prep_hit_rank_avg_x100: (head_res.hit_rank_avg() * 100.0).round() as u64,
+        arch_prep_hit_rank_avg_x100: hit_rank_avg_x100(head_res.hit_rank_avg()),
         arch_prep_hit_rank_n: head_res.hit_rank_n,
         arch_prep_miss_peeks: head_res.miss_peeks,
         arch_prep_pending_hits: head_res.pending_hits,
@@ -1322,6 +1334,8 @@ pub fn perf_sample_json(s: &IbdPerfSample) -> String {
 }
 
 /// Emit one DEBUG line (`ibd: progress` is a separate INFO tick).
+// Slow-phase warn is a log line. Stuck and rewind do not read it.
+#[cfg_attr(false, mutants::skip)]
 pub fn log_sample(s: &IbdPerfSample) {
     debug!(Ibd, "ibd: perf {}", perf_sample_json(s));
     if s.phase_blks > 0 {

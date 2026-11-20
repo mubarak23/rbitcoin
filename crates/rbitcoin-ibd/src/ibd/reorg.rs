@@ -282,8 +282,9 @@ pub fn header_work_of(hub: &ChainHub, hash: BlockHash) -> Result<Option<bitcoin:
 pub fn our_work_from_lca(hub: &ChainHub, lca_height: u32) -> Result<bitcoin::Work, NetError> {
     let tip_h = hub.tip_height().unwrap_or(0);
     let mut our = Vec::new();
-    if tip_h > lca_height {
-        for h in (lca_height + 1)..=tip_h {
+    // `tip <= lca` is an empty range. `checked_add` keeps `u32::MAX` from wrapping.
+    if let Some(start) = lca_height.checked_add(1) {
+        for h in start..=tip_h {
             let hdr = hub
                 .query
                 .wire_header_at_height(Height(h))
@@ -348,7 +349,8 @@ pub fn connecting_hashes_heavier_disconnected_n(
     let Some(tip) = hub.tip_hash() else {
         return Ok(None);
     };
-    if candidate == tip || hub.is_connected(&candidate) {
+    // A connected hash stops the ancestor walk, so this only skips the tip.
+    if candidate == tip {
         return Ok(None);
     }
     let path = header_hashes_to_best_ancestor_n(hub, candidate, walk_max)?;
@@ -748,7 +750,7 @@ pub fn prepare_header_rewind(
         );
         return Ok(None);
     }
-    if tip_h > lca_h {
+    if rewound {
         if !hub.try_rewind_to_height(lca_h)? {
             return Ok(None);
         }
@@ -848,7 +850,9 @@ pub fn apply_header_rewind(
 /// Off-lock rewinds take this, then `shared`. Reject and explore still
 /// disconnect through `maybe_rewind_to_best_work` → `apply_header_rewind`
 /// while the caller holds `shared`, so that path does not take this gate.
-fn rewind_exclusion() -> &'static Mutex<()> {
+/// One gate for the off-lock rewind. A fresh mutex each call would not exclude.
+#[doc(hidden)]
+pub fn rewind_exclusion() -> &'static Mutex<()> {
     static GATE: Mutex<()> = Mutex::new(());
     &GATE
 }

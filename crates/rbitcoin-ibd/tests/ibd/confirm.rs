@@ -1274,6 +1274,26 @@ fn thr_stats_all_stages_and_note_wire_prefer() {
     assert_eq!(rbitcoin_ibd::ibd::confirm::write_drain_max_parts(0), 1);
 }
 
+/// A released reservation stays spent. Clear refunds only heights above the tip.
+#[test]
+fn clear_keeps_a_released_reservation_spent() {
+    let feed = ConfirmFeed::new();
+    feed.set_unproven_bounds(None, 0, Some(1_000));
+    {
+        let mut g = feed.inner.lock().unwrap();
+        g.lead_reserved.insert(4, 50);
+        g.lead_reserved.insert(5, 100);
+        g.lead_reserved.insert(6, 200);
+        g.lead_bytes_left = Some(650);
+    }
+    feed.release_lead_reserve(4);
+    feed.clear(5);
+    let g = feed.inner.lock().unwrap();
+    assert!(g.lead_reserved.contains_key(&5));
+    assert!(!g.lead_reserved.contains_key(&6));
+    assert_eq!(g.lead_bytes_left, Some(850));
+}
+
 /// A plan queued before rewind must be dropped so it cannot commit as fk mismatch.
 #[test]
 fn confirm_feed_clear_drops_queued_plans() {

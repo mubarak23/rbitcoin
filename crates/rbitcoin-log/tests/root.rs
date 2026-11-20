@@ -18,6 +18,9 @@ fn level_parse_and_order() {
     assert_eq!(Level::parse("INFO"), Some(Level::Info));
     assert_eq!(Level::parse("warning"), Some(Level::Warn));
     assert_eq!(Level::parse("t"), Some(Level::Trace));
+    assert_eq!(Level::parse("off"), None);
+    assert_eq!(Level::parse("none"), None);
+    assert_eq!(Level::parse("0"), None);
     assert!(Level::Error < Level::Warn);
     assert!(Level::Warn < Level::Info);
     assert!(Level::Info < Level::Debug);
@@ -58,6 +61,48 @@ fn timestamp_epoch() {
     assert_eq!(s, "1970-02-01T00:00:00.000Z");
     let s = format_timestamp(UNIX_EPOCH + std::time::Duration::from_secs(364 * 86_400));
     assert_eq!(s, "1970-12-31T00:00:00.000Z");
+    // Day 59 is where `doe / 36524` crosses a year-of-era boundary.
+    // 2000-02-29 is the last day of the 400-year era (`doe / 146_096` is 1).
+    let s = format_timestamp(UNIX_EPOCH + std::time::Duration::from_secs(59 * 86_400));
+    assert_eq!(s, "1970-03-01T00:00:00.000Z");
+    let s = format_timestamp(UNIX_EPOCH + std::time::Duration::from_secs(11_016 * 86_400));
+    assert_eq!(s, "2000-02-29T00:00:00.000Z");
+}
+
+#[test]
+fn capture_on_keeps_the_buffer_and_off_drops_it() {
+    capture_logs(true);
+    log_at(Level::Info, format_args!("keep-me"));
+    capture_logs(true);
+    let mid = take_logs();
+    assert!(
+        mid.iter().any(|(_, msg)| msg.contains("keep-me")),
+        "{mid:?}"
+    );
+    log_at(Level::Info, format_args!("drop-me"));
+    capture_logs(false);
+    capture_logs(true);
+    let after = take_logs();
+    capture_logs(false);
+    assert!(
+        after.iter().all(|(_, msg)| !msg.contains("drop-me")),
+        "{after:?}"
+    );
+}
+
+#[test]
+fn repeated_info_gap_opens_at_one_second() {
+    // Neighborhood of `info_repeated`: the burst journey in
+    // `rbitcoin-net` tests `log_burst` reaches the same window.
+    let prev = std::time::Instant::now();
+    assert!(repeated_info_in_gap(
+        prev,
+        prev + std::time::Duration::from_millis(999)
+    ));
+    assert!(!repeated_info_in_gap(
+        prev,
+        prev + std::time::Duration::from_millis(1_000)
+    ));
 }
 
 #[test]

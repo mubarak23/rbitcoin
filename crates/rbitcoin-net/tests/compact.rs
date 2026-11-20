@@ -635,6 +635,22 @@ fn empty_compact_and_ambiguous_shortid() {
         }],
     };
     assert!(!cmpct_init_data_ok(&oob));
+
+    let mut inputs_only = coinbase();
+    inputs_only.output.clear();
+    let inputs_only = HeaderAndShortIds {
+        header: dummy_header(),
+        nonce: 0,
+        short_ids: vec![],
+        prefilled_txs: vec![bitcoin::bip152::PrefilledTransaction {
+            idx: 0,
+            tx: inputs_only,
+        }],
+    };
+    assert!(
+        cmpct_init_data_ok(&inputs_only),
+        "a prefilled tx with inputs is not null"
+    );
 }
 
 fn mined_h1_two_tx_hsi() -> HeaderAndShortIds {

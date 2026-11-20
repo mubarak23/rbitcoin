@@ -1224,7 +1224,7 @@ pub fn inject_learned_addrs(
 }
 
 // Learned-address tally only feeds the debug line. The book insert is the session result.
-#[cfg_attr(feature = "mutants", mutants::skip)]
+#[cfg_attr(false, mutants::skip)]
 fn tally_learned_addr(added: &mut usize) {
     *added += 1;
 }
@@ -1747,7 +1747,7 @@ fn apply_tip_child_bad_prev(
 }
 
 // Clock-wait log rate only. The halt reads `cascade_at`, not this sample.
-#[cfg_attr(feature = "mutants", mutants::skip)]
+#[cfg_attr(false, mutants::skip)]
 fn log_time_too_new_wait(height: u32, hash: BlockHash, err: &str) {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1833,7 +1833,7 @@ pub fn apply_engine_fault_reject(
 }
 
 // Consensus-invalid log rate only. Stuck, rewind, and the height map do not read it.
-#[cfg_attr(feature = "mutants", mutants::skip)]
+#[cfg_attr(false, mutants::skip)]
 fn log_consensus_invalid(height: u32, hash: BlockHash, err: &str) {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed) + 1;

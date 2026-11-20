@@ -50,10 +50,46 @@ fn bps_none_until_rank_mature() {
 fn progress_marks_on_64k_not_on_small_delta() {
     let mut r = PeerRate::default();
     r.sample(0, 0, true);
-    r.sample(1_000, 1_000, true);
-    assert_eq!(r.progress_ms, 0);
-    r.sample(2_000, 1_000 + PROGRESS_STEP, true);
+    // 64 + 1024 is the `*` to `+` mutant of the 64 KiB step. Hardcoded: reading
+    // `PROGRESS_STEP` would follow that mutant.
+    r.sample(1_000, 64 + 1_024, true);
+    assert_eq!(r.progress_ms, 0, "1088 bytes is not a 64 KiB step");
+    r.sample(2_000, 64 + 1_024 + 64 * 1_024, true);
     assert_eq!(r.progress_ms, 2_000);
+}
+
+#[test]
+fn sample_clock_and_eviction_keep_the_transfer_rate() {
+    // Neighborhood of `PeerRate::sample`: dial and the stall journey read `bps`.
+    let mut same = PeerRate::default();
+    same.sample(0, 0, true);
+    same.sample(1_000, 100_000, true);
+    same.sample(1_000, 100_000 + 64 * 1_024, true);
+    same.sample(2_000, 100_000 + 64 * 1_024, true);
+    assert_eq!(
+        same.progress_ms, 2_000,
+        "a repeated timestamp is not a clock rewind"
+    );
+
+    let mut edge = PeerRate::default();
+    edge.sample(0, 0, true);
+    edge.sample(MIN_SAMPLE_MS, 64 * 1_024, true);
+    assert_eq!(edge.progress_ms, MIN_SAMPLE_MS, "dt == 250 ms still folds");
+
+    let mut rate = PeerRate::default();
+    rate.sample(0, 0, true);
+    rate.sample(1_000, 250_000, true);
+    assert_eq!(rate.ewma, 15_625, "250_000 bytes in 1s");
+
+    let mut young = PeerRate::default();
+    young.sample(0, 0, true);
+    young.sample(5_000, 1_000, true);
+    assert_eq!(young.progress_ms, 0);
+    assert_eq!(
+        young.eviction_bps(9_000),
+        young.bps(),
+        "no block progress yet, so eviction does not age the rate"
+    );
 }
 
 #[test]

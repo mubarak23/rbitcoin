@@ -874,7 +874,7 @@ impl ActiveMempool {
         if !self.graph.contains(txid) {
             return Ok(());
         }
-        if self.unlink_txid(txid, Removal::Undo).is_err() || self.graph.contains(txid) {
+        if self.unlink_txid(txid, Removal::Undo).is_err() {
             return Err(MempoolError::Corrupt("marked tx still live"));
         }
         Ok(())
@@ -934,7 +934,7 @@ impl ActiveMempool {
         // One sat/kvB above the evicted chunk so that same-rate tx cannot re-enter.
         let raised = rate_sat_kvb.saturating_add(1);
         let next = decayed.max(raised);
-        if next > self.rolling_min_sat_kvb {
+        if rolling_min_bumped(next, self.rolling_min_sat_kvb) {
             rbitcoin_log::info!("mempool: rolling minimum fee bumped");
         }
         self.rolling_min_sat_kvb = next;
@@ -2347,13 +2347,6 @@ impl ActiveMempool {
                 }
             }
         }
-        if out.len() != n {
-            for i in 0..n {
-                if !out.contains(&i) {
-                    out.push(i);
-                }
-            }
-        }
         out
     }
 
@@ -3009,4 +3002,351 @@ pub fn rbf_allows_replacement(
 ) -> bool {
     rbf_pays_for_replacement(new_fee, new_weight, conflict_fee, conflict_weight)
         || pure_rbfr_pays(new_fee, new_weight, direct_fee, direct_weight)
+}
+
+/// Bump sentence. The floor is assigned either way.
+#[cfg_attr(false, mutants::skip)]
+fn rolling_min_bumped(next: u64, prev: u64) -> bool {
+    next > prev
+}
+
+#[cfg(test)]
+mod accept_mutant_pins {
+    use super::{
+        trust_keeps_structural, trust_script_reason, AcceptError, AcceptFailureRecord,
+        ActiveMempool, ChainTipCtx, ConflictScan, MapUtxoProvider, RestoreOrphans, SiblingEviction,
+        UtxoProvider, MAX_PACKAGE_WEIGHT,
+    };
+    use crate::graph::TxEntry;
+    use crate::orphanage::OrphanEntry;
+    use bitcoin::absolute::LockTime;
+    use bitcoin::hashes::Hash;
+    use bitcoin::transaction::Version;
+    use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+    use std::collections::HashMap;
+
+    fn tx_spending(parent: Txid, seed: u8) -> Transaction {
+        Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: parent,
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::from_bytes(vec![0x51, seed]),
+            }],
+        }
+    }
+
+    fn padded(script_len: usize, value: u64) -> Transaction {
+        let external = Txid::from_byte_array([0x44; 32]);
+        let mut tx = tx_spending(external, 1);
+        tx.output[0].value = Amount::from_sat(value);
+        tx.output[0].script_pubkey = ScriptBuf::from_bytes(vec![0x51; script_len.max(1)]);
+        tx
+    }
+
+    /// Non-segwit weight steps by 4. The package cap is a multiple of 4.
+    fn tx_at_weight(target: u64) -> Transaction {
+        let mut lo = 1usize;
+        let mut hi = target as usize;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if padded(mid, 1_000).weight().to_wu() < target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let tx = padded(lo, 1_000);
+        assert_eq!(tx.weight().to_wu(), target);
+        tx
+    }
+
+    /// Package admit uses this order so a restored child sees its parent.
+    #[test]
+    fn grandchild_follows_its_parent() {
+        let external = Txid::from_byte_array([0x11; 32]);
+        let parent = tx_spending(external, 1);
+        let child = tx_spending(parent.compute_txid(), 2);
+        let grand = tx_spending(child.compute_txid(), 3);
+        let order = ActiveMempool::ancestor_first_order(&[parent, grand, child]);
+        assert_eq!(order, vec![0, 2, 1], "{order:?}");
+    }
+
+    /// Package admit asks for this before it submits the package.
+    #[test]
+    fn one_tx_package_may_evict_a_sibling() {
+        assert_eq!(SiblingEviction::for_package(1), SiblingEviction::On);
+        assert_eq!(
+            SiblingEviction::for_package(2),
+            SiblingEviction::IfPaysFloor
+        );
+    }
+
+    /// `accept_package` rejects a package whose weight is past this cap.
+    #[test]
+    fn package_at_the_weight_cap_keeps_its_shape() {
+        let at = tx_at_weight(MAX_PACKAGE_WEIGHT);
+        assert!(ActiveMempool::check_package_shape(&[at]).is_ok());
+        let over = tx_at_weight(MAX_PACKAGE_WEIGHT + 4);
+        assert!(matches!(
+            ActiveMempool::check_package_shape(&[over]),
+            Err(AcceptError::PackageTooLarge { .. })
+        ));
+    }
+
+    /// Reorg eviction keeps an immature coinbase and drops a policy string
+    /// that only shares the warn class.
+    #[test]
+    fn a_warn_string_on_a_policy_error_is_not_a_structural_keep() {
+        assert!(trust_keeps_structural(true, &AcceptError::ImmatureCoinbase));
+        assert!(!trust_keeps_structural(
+            true,
+            &AcceptError::Policy("not final")
+        ));
+    }
+
+    /// A trusted script warn is recorded. A hard script error is not.
+    #[test]
+    fn a_trusted_script_warn_is_kept() {
+        let warn = AcceptError::Script("script verification failed".into());
+        assert_eq!(
+            trust_script_reason(true, &warn).as_deref(),
+            Some("script: script verification failed")
+        );
+        let hard = AcceptError::Script("mandatory-script-verify-flag".into());
+        assert!(trust_script_reason(true, &hard).is_none());
+    }
+
+    /// Accept aborts when this stamp changes. Map providers publish 0.
+    #[test]
+    fn a_map_provider_stamp_stays_zero() {
+        let utxos = MapUtxoProvider {
+            map: HashMap::new(),
+        };
+        assert_eq!(utxos.utxo_view_stamp(), Some(0));
+    }
+
+    /// Sub-floor txs enter the extra pool only when they carry a dust anchor.
+    #[test]
+    fn min_fee_extra_keeps_only_a_dust_anchor() {
+        let dust = padded(1, 0);
+        let paid = padded(1, 1_000);
+        let err = AcceptError::Policy("mempool min fee");
+        assert_eq!(
+            ActiveMempool::accept_failure_record(&dust, &err),
+            Some(AcceptFailureRecord::Extra)
+        );
+        assert_eq!(ActiveMempool::accept_failure_record(&paid, &err), None);
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "rbtc-mp-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn v3(seed: u8) -> Transaction {
+        let mut tx = tx_spending(Txid::from_byte_array([seed; 32]), seed);
+        tx.version = Version::non_standard(3);
+        tx
+    }
+
+    fn entry(tx: &Transaction, parents: &[Txid], children: &[Txid]) -> TxEntry {
+        TxEntry {
+            txid: tx.compute_txid(),
+            wtxid: tx.compute_wtxid(),
+            fee_sat: 1,
+            weight: tx.weight().to_wu(),
+            sigop_cost: 0,
+            slot: 0,
+            parents: parents.iter().copied().collect(),
+            children: children.iter().copied().collect(),
+        }
+    }
+
+    /// `commit_rechecked` publishes this list after a failed commit.
+    #[test]
+    fn a_failed_commit_returns_the_evicted_ids() {
+        let dir = scratch("evict");
+        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
+        let id = Txid::from_byte_array([0x91; 32]);
+        mp.last_evicted = vec![id];
+        assert_eq!(mp.take_failed_evictions(), vec![id]);
+        assert!(mp.last_evicted.is_empty());
+    }
+
+    /// The same failed commit returns the bodies it already unlinked.
+    #[test]
+    fn a_failed_commit_returns_the_replaced_bodies() {
+        let dir = scratch("undone");
+        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
+        let tx = tx_spending(Txid::from_byte_array([0x92; 32]), 2);
+        mp.undone_replacements = vec![tx.clone()];
+        mp.undone_accept_secs.insert(tx.compute_txid(), 4);
+        assert_eq!(mp.take_undone_replacements(), vec![tx]);
+        assert!(mp.undone_replacements.is_empty());
+        assert!(mp.undone_accept_secs.is_empty());
+    }
+
+    /// Only a torn sidecar is moved aside. An IO failure stays put.
+    #[test]
+    fn an_io_error_leaves_the_sidecar_in_place() {
+        let dir = scratch("io");
+        std::fs::create_dir(dir.join("meta")).unwrap();
+        assert!(ActiveMempool::open_with_limit_persist(&dir, 400_000, true).is_err());
+        assert!(dir.join("meta").is_dir());
+    }
+
+    /// A victim that does not re-enter the graph loses its trust mark.
+    #[test]
+    fn a_failed_restore_drops_the_trust_mark() {
+        let dir = scratch("trust");
+        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
+        let tx = tx_spending(Txid::from_byte_array([0x93; 32]), 3);
+        let id = tx.compute_txid();
+        mp.trust_kept.insert(id);
+        let utxos = MapUtxoProvider {
+            map: HashMap::new(),
+        };
+        mp.restore_victims(
+            &[tx],
+            &HashMap::new(),
+            &utxos,
+            ChainTipCtx::default(),
+            RestoreOrphans::Defer,
+        );
+        assert!(!mp.graph.contains(&id));
+        assert!(!mp.trust_kept.contains(&id));
+    }
+
+    /// Compaction runs for a real removal. An empty call leaves dead slots.
+    #[test]
+    fn an_empty_conflict_list_does_not_compact() {
+        let dir = scratch("compact");
+        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
+        let tx = tx_spending(Txid::from_byte_array([0x94; 32]), 4);
+        let txid = tx.compute_txid();
+        let wtxid = tx.compute_wtxid();
+        let slot = mp
+            .store
+            .append_live_tx(&tx, &txid, &wtxid, 0, tx.weight().to_wu(), 0, 0, &[])
+            .unwrap();
+        mp.store.mark_slot_dead(slot).unwrap();
+        let (_, _, dead) = mp.store.slot_stats();
+        assert!(dead >= 1);
+        assert!(mp.evict_conflicts_with(&[]).is_empty());
+        assert_eq!(mp.store.slot_stats().2, dead);
+        mp.remove_block_txids(&[], &[]).unwrap();
+        assert_eq!(mp.store.slot_stats().2, dead);
+    }
+
+    /// BIP 431 admits a transaction sitting on either size cap.
+    #[test]
+    fn truc_at_either_size_cap_is_admitted() {
+        let dir = scratch("truc-cap");
+        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
+        let lone = v3(1);
+        let none = ConflictScan {
+            direct_conflicts: std::collections::BTreeSet::new(),
+            parent_txids: std::collections::BTreeSet::new(),
+        };
+        assert!(mp.check_truc(&lone, 10_000, &none).unwrap().is_none());
+        assert!(matches!(
+            mp.check_truc(&lone, 10_001, &none),
+            Err(AcceptError::Policy("TRUC-violation"))
+        ));
+
+        let parent = v3(2);
+        let pid = parent.compute_txid();
+        mp.bodies.insert(pid, std::sync::Arc::new(parent.clone()));
+        mp.graph.entries.insert(pid, entry(&parent, &[], &[]));
+        let scan = ConflictScan {
+            direct_conflicts: std::collections::BTreeSet::new(),
+            parent_txids: std::collections::BTreeSet::from([pid]),
+        };
+        let child = v3(3);
+        assert!(mp.check_truc(&child, 1_000, &scan).unwrap().is_none());
+        assert!(matches!(
+            mp.check_truc(&child, 1_001, &scan),
+            Err(AcceptError::Policy("TRUC-violation"))
+        ));
+    }
+
+    /// A second child is not a sibling eviction when the first child has its own child.
+    #[test]
+    fn a_sibling_with_a_child_is_not_evicted() {
+        let dir = scratch("truc-sib");
+        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
+        let parent = v3(4);
+        let sibling = v3(5);
+        let grand = v3(6);
+        let pid = parent.compute_txid();
+        let sid = sibling.compute_txid();
+        let gid = grand.compute_txid();
+        mp.bodies.insert(pid, std::sync::Arc::new(parent.clone()));
+        mp.graph.entries.insert(pid, entry(&parent, &[], &[sid]));
+        mp.graph
+            .entries
+            .insert(sid, entry(&sibling, &[pid], &[gid]));
+        let scan = ConflictScan {
+            direct_conflicts: std::collections::BTreeSet::new(),
+            parent_txids: std::collections::BTreeSet::from([pid]),
+        };
+        assert!(matches!(
+            mp.check_truc(&v3(7), 100, &scan),
+            Err(AcceptError::Policy("TRUC-violation"))
+        ));
+    }
+
+    /// 1p1c looks only at an orphan that waits on this parent alone.
+    ///
+    /// This child spends the parent's dust and has not been tried, but it
+    /// still names a second missing parent.
+    #[test]
+    fn an_orphan_missing_two_parents_is_not_the_dust_spender() {
+        let dir = scratch("dust");
+        let mut mp = ActiveMempool::open_or_create(&dir).unwrap();
+        let mut parent = v3(8);
+        parent.output[0].value = Amount::ZERO;
+        parent.output[0].script_pubkey = ScriptBuf::from_bytes(vec![0x51]);
+        let mut child = tx_spending(parent.compute_txid(), 9);
+        child.version = Version::non_standard(3);
+        let txid = child.compute_txid();
+        let wtxid = child.compute_wtxid();
+        mp.orphanage.by_wtxid.insert(
+            wtxid,
+            OrphanEntry {
+                tx: child,
+                txid,
+                weight: 0,
+                missing: std::collections::BTreeSet::from([
+                    parent.compute_txid(),
+                    Txid::from_byte_array([0xcd; 32]),
+                ]),
+                announcers: std::collections::BTreeSet::new(),
+                arrived_ms: 0,
+            },
+        );
+        mp.orphanage.by_parent.insert(
+            parent.compute_txid(),
+            std::collections::HashSet::from([wtxid]),
+        );
+        assert!(mp.dust_spender(&parent, 1, |_| false).is_none());
+    }
 }

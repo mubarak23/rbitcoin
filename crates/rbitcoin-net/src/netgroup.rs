@@ -23,7 +23,9 @@ pub fn netgroup(addr: SocketAddr, asmap: Option<&AsMap>) -> u64 {
     let (lookup, prefix) = prefix_group(addr.ip());
     let asn = lookup.zip(asmap).map_or(0, |(ip, m)| m.mapped_as(ip));
     if asn != 0 {
-        ASN | u64::from(asn)
+        // An ASN fits in 32 bits and `ASN` sits at bit 33, so `|` and `^`
+        // are the same key. `wrapping_add` drops that `|`.
+        ASN.wrapping_add(u64::from(asn))
     } else {
         prefix
     }
@@ -49,7 +51,15 @@ fn prefix_group(ip: IpAddr) -> (Option<IpAddr>, u64) {
         IpAddr::V6(v6) => v6,
     };
     if crate::netaddr::is_cjdns_ip(v6) {
-        return (None, OVERLAY | (6 << 8) | u64::from(v6.octets()[1] >> 4));
+        // The overlay bit, the network id, and the nibble do not overlap,
+        // so `|` and `^` are the same key. `wrapping_add` drops that `|`.
+        let nibble = u64::from(v6.octets()[1] >> 4);
+        return (
+            None,
+            OVERLAY
+                .wrapping_add(u64::from(6u8) << 8)
+                .wrapping_add(nibble),
+        );
     }
     match linked_ipv4(v6) {
         Some(v4) => (Some(IpAddr::V4(v4)), ipv4_group(v4)),
@@ -59,7 +69,8 @@ fn prefix_group(ip: IpAddr) -> (Option<IpAddr>, u64) {
 
 fn ipv4_group(v4: Ipv4Addr) -> u64 {
     let o = v4.octets();
-    (u64::from(o[0]) << 8) | u64::from(o[1])
+    // The high byte sits above the low byte, so `|` and `^` are the same key.
+    (u64::from(o[0]) << 8).wrapping_add(u64::from(o[1]))
 }
 
 /// Core `GetLinkedIPv4`: the IPv4 an IPv4-mapped, NAT64 (RFC 6052), SIIT
@@ -91,7 +102,9 @@ fn ipv6_group(v6: Ipv6Addr) -> u64 {
     let slash32 = u32::from_be_bytes([o[0], o[1], o[2], o[3]]);
     let he_net = o[..4] == [32, 1, 4, 112];
     let nibble = if he_net { o[4] >> 4 } else { 0 };
-    IPV6 | (u64::from(slash32) << 4) | u64::from(nibble)
+    // `IPV6` sits at bit 40, above the `/32` and the Hurricane Electric nibble.
+    IPV6.wrapping_add(u64::from(slash32) << 4)
+        .wrapping_add(u64::from(nibble))
 }
 
 /// Group key for the one-automatic-outbound-per-group rule, or `None` where
@@ -117,11 +130,17 @@ pub fn netgroup_net(addr: NetAddr, asmap: Option<&AsMap>) -> u64 {
     match addr {
         NetAddr::Ip(sock) => netgroup(sock, asmap),
         NetAddr::Cjdns { ip, port } => netgroup(SocketAddr::from((ip, port)), asmap),
-        // BIP155 network ids: 4 is TorV3, 5 is I2P.
-        NetAddr::Onion { pk, .. } => OVERLAY | (4 << 8) | u64::from(pk[0] >> 4),
-        NetAddr::I2p { dest, .. } => OVERLAY | (5 << 8) | u64::from(dest[0] >> 4),
+        // BIP155 network ids: 4 is TorV3, 5 is I2P. The overlay bit, the
+        // network id, and the nibble do not overlap, so `|` and `^` are the
+        // same key. `wrapping_add` drops that `|`.
+        NetAddr::Onion { pk, .. } => OVERLAY
+            .wrapping_add(u64::from(4u8) << 8)
+            .wrapping_add(u64::from(pk[0] >> 4)),
+        NetAddr::I2p { dest, .. } => OVERLAY
+            .wrapping_add(u64::from(5u8) << 8)
+            .wrapping_add(u64::from(dest[0] >> 4)),
         // A `--proxy` hostname has no address bits to split on.
-        NetAddr::Name { .. } => OVERLAY | (u64::from(u8::MAX) << 8),
+        NetAddr::Name { .. } => OVERLAY.wrapping_add(u64::from(u8::MAX) << 8),
     }
 }
 

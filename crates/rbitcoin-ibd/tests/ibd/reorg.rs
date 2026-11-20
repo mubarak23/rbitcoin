@@ -1230,3 +1230,139 @@ fn explore_need_and_tips_stay_capped() {
     assert!(st.explore_need_hashes().contains(&last));
     assert!(st.explore_tips().contains(&last));
 }
+
+fn pin_hash(n: u8) -> BlockHash {
+    let mut raw = [0u8; 32];
+    raw[0] = n;
+    BlockHash::from_byte_array(raw)
+}
+
+/// Equal tip and LCA is a plant. `>` to `>=` marks it rewound.
+#[test]
+fn reorg_pin_a_plant_at_the_tip_is_not_a_rewind() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let side = mine(gen, hub.tip_header().unwrap().time.saturating_add(1), 1);
+    hub.ensure_header(&side.header).unwrap();
+    let prep = prepare_header_rewind(&hub, &[side.block_hash()], 1)
+        .unwrap()
+        .expect("a child of the tip is a plant");
+    assert!(!prep.rewound);
+    assert_eq!(hub.tip_height(), Some(0));
+    let _ = dir;
+}
+
+/// Depth equal to the cap still disconnects. `>` to `>=` refuses it.
+#[test]
+fn reorg_pin_a_rewind_at_the_depth_cap_still_disconnects() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    hub.confirm_empty_regtest(1).unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let side = distinct_sib(
+        mine(gen, hub.tip_header().unwrap().time.saturating_add(1), 1),
+        tip,
+    );
+    hub.ensure_header(&side.header).unwrap();
+    let prep = prepare_header_rewind(&hub, &[side.block_hash()], 1)
+        .unwrap()
+        .expect("depth equal to the cap still rewinds");
+    assert!(prep.rewound);
+    assert_eq!(hub.tip_height(), Some(0));
+    let _ = dir;
+}
+
+/// The off-lock rewind takes one mutex. A leaked mutex each call would not.
+#[test]
+fn reorg_pin_the_off_lock_rewind_gate_is_one_mutex() {
+    let first = rewind_exclusion();
+    let second = rewind_exclusion();
+    assert!(std::ptr::eq(first, second));
+}
+
+/// Invalid, not rejected. `||` to `&&` keeps the row as a competing tip.
+#[test]
+fn reorg_pin_an_invalid_row_is_not_a_competing_tip() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let mut st = rbitcoin_ibd::ibd::state::IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    let bad = pin_hash(0xab);
+    st.hash_height.insert(bad, 0);
+    st.reorg.invalid.mark(bad.to_byte_array());
+    let tips = competing_valid_header_tips(&st, &hub);
+    assert!(tips.is_empty(), "{tips:?}");
+    let _ = dir;
+}
+
+/// The active tip is not a start. `==` to `!=` keeps the tip and drops the sibling.
+/// Delete `!` on the duplicate check pushes nothing.
+#[test]
+fn reorg_pin_the_active_tip_is_not_a_competing_start() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let mut st = rbitcoin_ibd::ibd::state::IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    let sib = pin_hash(0x11);
+    st.hash_height.insert(sib, 0);
+    st.reorg.invalid.mark(pin_hash(0xee).to_byte_array());
+    let tips = competing_valid_header_tips(&st, &hub);
+    assert_eq!(tips, vec![sib]);
+    let _ = dir;
+}
+
+/// One hash at a height is not a fork. Two are. `>` to `>=`, `==`, or `<`
+/// changes that, and delete `!` on the tip list pushes nothing.
+#[test]
+fn reorg_pin_only_a_real_fork_is_a_competing_start() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let mut st = rbitcoin_ibd::ibd::state::IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    let a = pin_hash(1);
+    let b = pin_hash(2);
+    let c = pin_hash(3);
+    st.hash_height.insert(a, 2);
+    st.hash_height.insert(b, 2);
+    st.hash_height.insert(c, 5);
+    st.reorg.invalid.mark(pin_hash(9).to_byte_array());
+    let tips = competing_valid_header_tips(&st, &hub);
+    assert!(tips.contains(&a) && tips.contains(&b), "{tips:?}");
+    assert!(!tips.contains(&c), "{tips:?}");
+    let _ = dir;
+}
+
+/// An invalid child is not the extension. `||` to `&&` follows it.
+#[test]
+fn reorg_pin_an_invalid_child_does_not_extend_the_tip() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let child = mine(gen, hub.tip_header().unwrap().time.saturating_add(1), 1);
+    hub.ensure_header(&child.header).unwrap();
+    let mut st = rbitcoin_ibd::ibd::state::IbdWorkState::new(Vec::new(), Some(gen), Some(0));
+    st.reorg.invalid.mark(child.block_hash().to_byte_array());
+    let mut by_h = std::collections::HashMap::new();
+    by_h.insert(1u32, vec![child.block_hash()]);
+    let got = extend_valid_header_tip(&st, &hub, &by_h, gen, 0);
+    assert_eq!(got, gen);
+    let _ = dir;
+}
+
+/// A non-empty download queue hides the walk tip. `||` to `&&` requires both
+/// a queue and a tip+1 slot.
+#[test]
+fn reorg_pin_a_planted_queue_hides_the_walk_tip() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let mut st =
+        rbitcoin_ibd::ibd::state::IbdWorkState::new(Vec::new(), hub.tip_hash(), hub.tip_height());
+    st.ordered.push_back(pin_hash(4));
+    st.header_walk.tip.hash = Some(pin_hash(7));
+    st.header_walk.tip.height = 5;
+    let (cands, _) = heavier_fork_candidates(&st, &hub).unwrap();
+    assert!(cands.is_empty(), "{cands:?}");
+    let _ = dir;
+}

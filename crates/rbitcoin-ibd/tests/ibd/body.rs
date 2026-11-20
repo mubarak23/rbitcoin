@@ -51,6 +51,24 @@ fn presence_lifecycle_surface() {
     assert_eq!(snap.rejected, 1);
 }
 
+/// Header headroom reads `known_len` after hygiene drops a known-pending hash.
+#[test]
+fn hygiene_retain_drops_known_len_for_header_headroom() {
+    let mut body = BodyPresence::new();
+    body.mark_archived(h(1));
+    body.mark_pending(h(1));
+    body.mark_archived(h(4));
+    assert_eq!(body.known_len(), 2);
+    body.hygiene_retain(|x| *x == h(4));
+    assert!(body.is_known_archived(&h(4)));
+    assert!(!body.is_pending(&h(1)));
+    assert_eq!(
+        body.known_len(),
+        1,
+        "the dropped known-pending hash leaves the kept archive"
+    );
+}
+
 #[test]
 fn rejected_sticky_through_mark_ops() {
     let mut body = BodyPresence::new();

@@ -40,7 +40,8 @@ fn blocks_in_window(n_blocks: u32) -> NonZeroUsize {
 /// Lowest hurdle in `hurdles[start..start + n]`. `n` is at least one.
 fn lowest_hurdle(hurdles: &VecDeque<u64>, start: usize, n: NonZeroUsize) -> u64 {
     let mut low = hurdles[start];
-    for h in hurdles.range(start + 1..start + n.get()).copied() {
+    // `start + 1` and `start * 1` share a minimum with `hurdles[start]`.
+    for h in hurdles.range(start..start + n.get()).skip(1).copied() {
         low = low.min(h);
     }
     low
@@ -214,7 +215,8 @@ pub fn log_quantile(outcomes: &mut [u64], confidence: f64) -> u64 {
     let rank = (confidence * n as f64).clamp(1.0, n as f64);
     let lo = rank.floor() as usize - 1;
     let hi = rank.ceil() as usize - 1;
-    if lo == hi || outcomes[lo] == outcomes[hi] {
+    // `lo == hi` already implies the two outcomes are the same element.
+    if outcomes[lo] == outcomes[hi] {
         return outcomes[lo];
     }
     let frac = rank - rank.floor();

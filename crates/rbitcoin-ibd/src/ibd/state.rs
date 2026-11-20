@@ -807,7 +807,7 @@ impl HeightIndex {
         if self.slots.is_empty() {
             return;
         }
-        let skip_hi = indexed_through.filter(|tip| *tip > queue_tail);
+        let skip_hi = indexed_through.filter(|tip| queue_tail < *tip);
         if self.base <= queue_tail {
             let last = ((queue_tail - self.base) as usize).min(self.slots.len() - 1);
             for i in 0..=last {
@@ -820,15 +820,13 @@ impl HeightIndex {
             } else {
                 ((tip - self.base) as usize).saturating_add(1)
             }
-        } else if self.base > queue_tail {
+        } else if queue_tail < self.base {
             0
         } else {
             ((queue_tail - self.base) as usize).saturating_add(1)
         };
-        if suffix_from < self.slots.len() {
-            for i in suffix_from..self.slots.len() {
-                self.consider(i, &mut keep);
-            }
+        for i in suffix_from..self.slots.len() {
+            self.consider(i, &mut keep);
         }
         self.shrink_ends();
     }
@@ -852,13 +850,284 @@ impl HeightIndex {
             return;
         }
         if let Some(skip) = self.slots.iter().position(|slot| slot.is_some()) {
-            if skip > 0 {
-                self.slots.drain(0..skip);
-                self.base = self.base.saturating_add(skip as u32);
-            }
+            self.slots.drain(0..skip);
+            self.base = self.base.saturating_add(skip as u32);
         }
         while self.slots.last().is_some_and(|slot| slot.is_none()) {
             self.slots.pop();
         }
+    }
+}
+
+#[cfg(test)]
+mod height_index_pins {
+    use super::HeightIndex;
+    use bitcoin::hashes::Hash;
+    use bitcoin::BlockHash;
+
+    fn hash(b: u8) -> BlockHash {
+        BlockHash::from_byte_array([b; 32])
+    }
+
+    fn index(pairs: &[(u32, u8)]) -> HeightIndex {
+        let mut ix = HeightIndex::default();
+        for &(ht, b) in pairs {
+            ix.insert(ht, hash(b));
+        }
+        ix
+    }
+
+    fn heights(ix: &HeightIndex) -> Vec<u32> {
+        ix.iter().map(|(ht, _)| ht).collect()
+    }
+
+    /// Per-second hygiene reads this map. A height below the base has to count.
+    #[test]
+    fn a_lower_height_widens_the_base() {
+        let ix = index(&[(5, 1), (3, 2)]);
+        assert!(!ix.is_empty());
+        assert_eq!(ix.len(), 2);
+        assert_eq!(ix.values().count(), 2);
+        assert_eq!(ix.get(&3), Some(&hash(2)));
+        assert_eq!(ix.get(&5), Some(&hash(1)));
+    }
+
+    #[test]
+    fn remove_drops_the_occupant() {
+        let mut ix = index(&[(5, 1)]);
+        assert_eq!(ix.remove(&5), Some(hash(1)));
+        assert!(ix.is_empty());
+        assert_eq!(ix.len(), 0);
+        assert_eq!(ix.values().count(), 0);
+    }
+
+    #[test]
+    fn retain_drops_only_the_rejected_height() {
+        let mut ix = index(&[(5, 1), (7, 2)]);
+        ix.retain(|ht, _| *ht == 7);
+        assert_eq!(heights(&ix), vec![7]);
+        assert_eq!(ix.len(), 1);
+    }
+
+    /// Slots inside `(queue_tail, indexed_through]` stay. Hygiene uses that window.
+    #[test]
+    fn outside_the_indexed_window_is_the_only_band_visited() {
+        let mut ix = index(&[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]);
+        ix.retain_outside(2, Some(4), |_, _| false);
+        assert_eq!(heights(&ix), vec![3, 4]);
+    }
+
+    #[test]
+    fn without_an_index_tip_every_height_above_the_tail_is_visited() {
+        let mut ix = index(&[(1, 1), (2, 2), (3, 3)]);
+        ix.retain_outside(1, None, |_, _| false);
+        assert!(ix.is_empty());
+    }
+
+    #[test]
+    fn a_base_on_the_index_tip_stays_in_the_window() {
+        let mut ix = index(&[(5, 1), (6, 2)]);
+        ix.retain_outside(1, Some(5), |_, _| false);
+        assert_eq!(heights(&ix), vec![5]);
+    }
+
+    #[test]
+    fn a_base_above_the_index_tip_is_all_outside() {
+        let mut ix = index(&[(10, 1), (11, 2)]);
+        ix.retain_outside(1, Some(5), |_, _| false);
+        assert!(ix.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod work_path_pins {
+    use super::{IbdWorkState, InflightReq, DEEP_HYGIENE_SLACK};
+    use bitcoin::hashes::Hash;
+    use bitcoin::BlockHash;
+
+    fn hash_n(n: u32) -> BlockHash {
+        let mut raw = [0u8; 32];
+        raw[..4].copy_from_slice(&n.to_le_bytes());
+        BlockHash::from_byte_array(raw)
+    }
+
+    fn fresh() -> IbdWorkState {
+        IbdWorkState::new(Vec::new(), None, None)
+    }
+
+    /// Assign still treats a retired holder as someone who was asked.
+    #[test]
+    fn retired_holder_stays_on_the_request() {
+        let mut req = InflightReq::new(2);
+        assert!(req.add_peer(7));
+        req.retire_peer(2);
+        assert_eq!(req.retired_ids().collect::<Vec<_>>(), vec![2]);
+        assert_eq!(req.holder_ids().collect::<Vec<_>>(), vec![2, 7]);
+    }
+
+    /// Reorg gather moves a hash without erasing the height a sibling owns.
+    #[test]
+    fn moving_a_hash_leaves_the_height_a_sibling_owns() {
+        let mut st = fresh();
+        let a = hash_n(1);
+        let b = hash_n(2);
+        st.record_height(a, 1);
+        st.record_height(b, 1);
+        st.record_height(a, 2);
+        assert_eq!(st.height_to_hash.get(&1), Some(&b));
+        assert_eq!(st.height_to_hash.get(&2), Some(&a));
+    }
+
+    /// Header intake keeps the connected occupant when the same hash is re-offered.
+    #[test]
+    fn an_unanchored_repeat_leaves_the_slot() {
+        let mut st = fresh();
+        let a = hash_n(1);
+        st.record_height(a, 5);
+        assert!(!st.try_set_path_slot(a, 5, hash_n(9), None));
+        assert_eq!(st.height_to_hash.get(&5), Some(&a));
+    }
+
+    /// Header intake chains onto the previous occupant.
+    #[test]
+    fn a_chained_offer_keeps_the_parent_slot() {
+        let mut st = fresh();
+        let a = hash_n(1);
+        let b = hash_n(2);
+        st.record_height(a, 1);
+        st.record_height(b, 1);
+        assert!(st.try_set_path_slot(a, 2, b, None));
+        assert_eq!(st.height_to_hash.get(&1), Some(&b));
+        assert_eq!(st.height_to_hash.get(&2), Some(&a));
+    }
+
+    /// Reorg apply drops the suffix and leaves the fork height queued.
+    #[test]
+    fn clear_above_keeps_the_fork_height_queued() {
+        let mut st = fresh();
+        let a = hash_n(1);
+        let b = hash_n(2);
+        st.record_height(a, 5);
+        st.record_height(b, 6);
+        st.ordered_set.insert(a);
+        st.ordered_set.insert(b);
+        st.ordered.push_back(a);
+        st.ordered.push_back(b);
+        st.clear_path_above(5);
+        assert!(st.is_on_path(&a, 5));
+        assert!(!st.is_on_path(&b, 6));
+        assert!(st.ordered_set.contains(&a));
+        assert!(!st.ordered_set.contains(&b));
+    }
+
+    /// Ghost entries past four times the live set, and past 128, compact.
+    #[test]
+    fn one_past_the_ghost_floor_is_bloated() {
+        let mut st = fresh();
+        for n in 0..128 {
+            st.ordered.push_back(hash_n(n));
+        }
+        assert!(!st.ordered_bloated());
+        st.ordered.push_back(hash_n(128));
+        assert!(st.ordered_bloated());
+    }
+
+    /// Per-second hygiene keeps an in-flight hash that is not on the live queue.
+    #[test]
+    fn hygiene_keeps_an_inflight_hash_below_the_tail() {
+        let mut st = fresh();
+        let h = hash_n(1);
+        st.height_to_hash.insert(5, h);
+        st.hash_height.insert(h, 5);
+        st.inflight.insert(h, InflightReq::new(1));
+        st.body.mark_pending(h);
+        st.hygiene();
+        assert_eq!(st.height_to_hash.get(&5), Some(&h));
+        assert!(st.body.is_pending_hash(&h));
+    }
+
+    /// Deep hygiene walks `known_headers` only past the slack.
+    #[test]
+    fn known_at_the_slack_ceiling_is_not_swept() {
+        let mut st = fresh();
+        let kept = hash_n(1);
+        st.inflight.insert(kept, InflightReq::new(1));
+        st.known_headers.insert(kept);
+        let junk = DEEP_HYGIENE_SLACK as u32;
+        for n in 0..junk {
+            st.known_headers.insert(hash_n(100 + n));
+        }
+        assert_eq!(st.known_headers.len(), DEEP_HYGIENE_SLACK + 1);
+        st.deep_hygiene();
+        assert!(st.known_headers.contains(&hash_n(100)));
+    }
+
+    /// One past that ceiling, an in-flight hash stays and a stranger goes.
+    #[test]
+    fn known_sweep_keeps_inflight_only() {
+        let mut st = fresh();
+        let kept = hash_n(1);
+        st.inflight.insert(kept, InflightReq::new(1));
+        st.known_headers.insert(kept);
+        for n in 0..=DEEP_HYGIENE_SLACK as u32 {
+            st.known_headers.insert(hash_n(100 + n));
+        }
+        st.deep_hygiene();
+        assert!(st.known_headers.contains(&kept));
+        assert!(!st.known_headers.contains(&hash_n(100)));
+        assert_eq!(st.known_headers.len(), 1);
+    }
+
+    /// Follower maps walk only past their own slack.
+    #[test]
+    fn followers_at_the_slack_ceiling_are_not_swept() {
+        let mut st = fresh();
+        st.inflight.insert(hash_n(1), InflightReq::new(1));
+        let n = (DEEP_HYGIENE_SLACK + 1) as u32;
+        for i in 0..n {
+            st.header_fks
+                .insert(hash_n(100 + i), rbitcoin_primitives::Fk(1));
+        }
+        st.deep_hygiene();
+        assert_eq!(st.header_fks.len(), DEEP_HYGIENE_SLACK + 1);
+    }
+
+    /// Past that ceiling, in-flight, known, and occupant rows stay.
+    #[test]
+    fn follower_sweep_keeps_each_reason() {
+        let mut st = fresh();
+        let row_inflight = hash_n(1);
+        let row_known = hash_n(2);
+        let occupant = hash_n(3);
+        let fk_inflight = hash_n(4);
+        let fk_known = hash_n(5);
+        st.inflight.insert(row_inflight, InflightReq::new(1));
+        st.inflight.insert(fk_inflight, InflightReq::new(2));
+        st.known_headers.insert(row_known);
+        st.known_headers.insert(fk_known);
+        st.hash_height.insert(occupant, 9);
+        st.height_to_hash.insert(9, occupant);
+        st.hash_height.insert(row_inflight, 8);
+        st.hash_height.insert(row_known, 7);
+        for i in 0..(DEEP_HYGIENE_SLACK as u32 + 8) {
+            let h = hash_n(100 + i);
+            st.hash_height.insert(h, 1_000 + i);
+            st.header_fks.insert(h, rbitcoin_primitives::Fk(1));
+            st.path_prev.insert(h, hash_n(9));
+        }
+        for h in [fk_inflight, fk_known, occupant] {
+            st.header_fks.insert(h, rbitcoin_primitives::Fk(1));
+            st.path_prev.insert(h, hash_n(6));
+        }
+        st.deep_hygiene();
+        assert!(st.hash_height.contains_key(&row_inflight));
+        assert!(st.hash_height.contains_key(&row_known));
+        assert!(st.hash_height.contains_key(&occupant));
+        assert!(st.header_fks.contains_key(&fk_inflight));
+        assert!(st.header_fks.contains_key(&fk_known));
+        assert!(st.header_fks.contains_key(&occupant));
+        assert!(st.path_prev.contains_key(&fk_inflight));
+        assert!(!st.hash_height.contains_key(&hash_n(100)));
+        assert!(!st.header_fks.contains_key(&hash_n(100)));
     }
 }

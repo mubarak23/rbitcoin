@@ -413,6 +413,31 @@ fn modified_fee_rechunks_parent_and_child() {
     assert_eq!(fee, 1_000 + 100 + 80_000);
 }
 
+/// Every tx in the cluster has a nonzero `prioritisetransaction` delta.
+/// The parent stays in the template. A base-fee chunk would drop it with
+/// the child.
+#[test]
+fn both_nonzero_deltas_keep_the_parent() {
+    let mut g = TxGraph::new();
+    let parent = spend_op([0x81u8; 32], 0, 40_000);
+    let pid = parent.compute_txid();
+    let child = make_tx(Some((pid, 0)), 1, 0x82);
+    let cid = child.compute_txid();
+    g.insert(entry_for(&parent, 1_000, 0), &parent);
+    g.insert(entry_for(&child, 50_000, 1), &child);
+    let drop = |id: Txid| {
+        if id == cid {
+            -(50_000 + 1_000 + 1)
+        } else {
+            -1
+        }
+    };
+    assert_eq!(
+        select_ids(&g, budget(TxGraph::template_tx_weight()), drop),
+        vec![pid]
+    );
+}
+
 /// Core `TestChunkBlockLimits`: a chunk that would overflow weight is
 /// skipped and later, smaller chunks still fill the block.
 #[test]

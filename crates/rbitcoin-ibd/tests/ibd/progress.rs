@@ -180,6 +180,42 @@ fn work_chain_progress_fetch_hole_requires_body_queue() {
         None,
         "a listed height is read again after confirm dequeues it"
     );
+    let h_other = BlockHash::from_byte_array([9u8; 32]);
+    hub.query
+        .block_queue_enqueue(1, h_other.to_byte_array(), 1, b"y")
+        .unwrap();
+    assert_eq!(
+        span.hash_at(&hub, 1),
+        None,
+        "height lo stays missing once the copy dropped it"
+    );
+    hub.query.block_queue_dequeue_height(1).unwrap();
+    hub.query
+        .block_queue_enqueue(2, h1.to_byte_array(), 1, b"z")
+        .unwrap();
+    let mut hi_span = rbitcoin_ibd::ibd::progress::QueuedHashSpan::load(&hub, 1, 2);
+    assert_eq!(hi_span.hash_at(&hub, 2), Some(h1.to_byte_array()));
+    hub.query.block_queue_dequeue_height(2).unwrap();
+    assert_eq!(hi_span.hash_at(&hub, 2), None);
+    hub.query
+        .block_queue_enqueue(2, h_other.to_byte_array(), 1, b"w")
+        .unwrap();
+    assert_eq!(
+        hi_span.hash_at(&hub, 2),
+        None,
+        "height hi stays missing once the copy dropped it"
+    );
+    hub.query.block_queue_dequeue_height(2).unwrap();
+    hub.query
+        .block_queue_enqueue(1, h1.to_byte_array(), 1, b"v")
+        .unwrap();
+    let mut below = rbitcoin_ibd::ibd::progress::QueuedHashSpan::load(&hub, 2, 3);
+    assert_eq!(
+        below.hash_at(&hub, 1),
+        Some(h1.to_byte_array()),
+        "a height below lo still reads the live queue"
+    );
+    hub.query.block_queue_dequeue_height(1).unwrap();
     hub.query
         .block_queue_enqueue(1, h1.to_byte_array(), 1, b"x")
         .unwrap();
@@ -274,6 +310,31 @@ fn tip_rate_tracker_eta_surface() {
     assert_eq!(
         warm.eta_string(t0 + Duration::from_secs(100), 100, 100),
         "done"
+    );
+
+    // Neighborhood: assign's soft window reads this EMA, not the progress line.
+    let mut step = TipRateTracker::new();
+    step.push(t0, 0);
+    step.push(t0 + Duration::from_secs(30), 0);
+    assert!(
+        step.eta_rate(t0 + Duration::from_secs(30)).is_none(),
+        "a zero pace is not a window"
+    );
+    step.push(t0 + Duration::from_secs(40), 100);
+    let jumped = step.eta_rate(t0 + Duration::from_secs(40)).unwrap();
+    assert!((jumped - 0.741).abs() < 0.01, "jumped={jumped}");
+    step.push(t0 + Duration::from_secs(50), 100);
+    let flat = step.eta_rate(t0 + Duration::from_secs(50)).unwrap();
+    assert!((flat - 0.686).abs() < 0.01, "flat={flat}");
+
+    let mut gate = TipRateTracker::new();
+    gate.push(t0, 0);
+    gate.push(t0 + Duration::from_secs(10), 100);
+    assert!(gate.eta_rate(t0 + Duration::from_secs(10)).is_none());
+    assert!(gate.eta_rate(t0 + Duration::from_secs(20)).is_some());
+    assert_eq!(
+        gate.eta_string(t0 + Duration::from_secs(20), 0, 100),
+        "eta=10s"
     );
 }
 

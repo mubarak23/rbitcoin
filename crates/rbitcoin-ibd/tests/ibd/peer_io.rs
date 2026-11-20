@@ -53,6 +53,100 @@ fn dummy_slot(id: usize) -> PeerSlot {
     }
 }
 
+/// `sample_peer_rates` copies the on-wire getdata time into the rate.
+#[test]
+fn pio_pin_write_time_enters_the_rate() {
+    let mut s = dummy_slot(4);
+    s.getdata_wire.wrote(1, 55);
+    s.rate.work_started_ms = 0;
+    sample_peer_rates(std::slice::from_mut(&mut s), 55);
+    assert_eq!(s.rate.work_started_ms, 55);
+}
+
+/// Drop tells the peer task to stop.
+#[test]
+fn pio_pin_dropping_a_slot_shuts_the_peer() {
+    let (cmd_tx, mut rx) = mpsc::unbounded_channel();
+    let mut s = dummy_slot(1);
+    s.cmd_tx = cmd_tx;
+    drop(s);
+    assert!(matches!(rx.try_recv(), Ok(PeerCmd::Shutdown)));
+}
+
+/// A decode that is still running stays beside the one just pushed.
+#[test]
+fn pio_pin_a_live_decode_is_kept() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut light = LightDecodes { tasks: Vec::new() };
+        light.push(tokio::spawn(std::future::pending::<()>()));
+        light.push(tokio::spawn(std::future::pending::<()>()));
+        assert_eq!(light.tasks.len(), 2);
+    });
+}
+
+/// Dropping the reader aborts a decode that is still waiting.
+#[test]
+fn pio_pin_dropping_decodes_aborts_them() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let light = LightDecodes {
+            tasks: vec![tokio::spawn(async move {
+                let _hold = tx;
+                std::future::pending::<()>().await;
+            })],
+        };
+        drop(light);
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+    });
+}
+
+/// An IO error that is not EOF or reset is not labeled as one.
+#[test]
+fn pio_pin_a_refused_connection_is_not_an_eof() {
+    let (mut ctx, _, mut body_rx, _) = test_ctx(1);
+    let err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "no");
+    assert!(ctx.dispatch_err(NetError::Io(err)));
+    match body_rx.try_recv() {
+        Ok(PeerEvent::Dead { reason, .. }) => {
+            assert!(!reason.starts_with("eof:"), "{reason}");
+        }
+        other => {
+            let _ = other;
+            panic!("expected a dead event");
+        }
+    }
+}
+
+/// A repeated progress stamp does not move the byte cursor. A later stamp does.
+#[test]
+fn unchanged_progress_keeps_the_byte_mark() {
+    let mut s = dummy_slot(3);
+    s.rate.progress_ms = 40;
+    s.rate.bytes_at_progress = 7;
+    s.solicited_ms.store(40, Ordering::Relaxed);
+    s.solicited_bytes.store(90, Ordering::Relaxed);
+    sample_peer_rates(std::slice::from_mut(&mut s), 40);
+    assert_eq!(s.rate.progress_ms, 40);
+    assert_eq!(s.rate.bytes_at_progress, 7);
+
+    s.solicited_ms.store(41, Ordering::Relaxed);
+    sample_peer_rates(std::slice::from_mut(&mut s), 41);
+    assert_eq!(s.rate.progress_ms, 41);
+    assert_eq!(s.rate.bytes_at_progress, 90);
+}
+
 #[test]
 fn usable_dial_and_services_filters() {
     assert!(!services_useful_for_ibd(ServiceFlags::NETWORK));

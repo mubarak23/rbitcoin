@@ -227,3 +227,12 @@ fn end_updates_match_a_rebuild() {
         assert_eq!(a.pairs, b.pairs, "N={}", a.n);
     }
 }
+
+/// Neighborhood of the historical hurdle: lookback length and the lower median.
+#[test]
+fn lookback_and_lower_median_keep_their_indexes() {
+    assert_eq!(analog_lookback(16), 4);
+    assert_eq!(analog_lookback(600), 144);
+    assert_eq!(lower_median([10, 20, 30].into_iter()), 20);
+    assert_eq!(lower_median([10, 20].into_iter()), 10);
+}

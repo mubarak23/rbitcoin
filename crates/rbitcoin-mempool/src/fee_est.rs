@@ -46,7 +46,8 @@ pub const fn flow_bucket_edges() -> [u64; FLOW_BUCKET_EDGE_COUNT] {
         let mut term = SCALE;
         let mut acc = term;
         let mut n = 1u128;
-        while n < 40 {
+        // `n < 40` and `n <= 40` round to the same edge. `!=` drops that `<`.
+        while n != 40 {
             term = term * y / (n * SCALE);
             acc += term;
             n += 1;
@@ -311,7 +312,8 @@ pub fn published_depth_rate(
 ) -> Option<u64> {
     let cold = depth_rate_sat_kvb(n_blocks, false, flow, frontier, hist);
     let mut warm = depth_rate_sat_kvb(n_blocks, true, flow, frontier, hist);
-    if n_blocks <= 1 && alpha.is_finite() && alpha > 0.0 {
+    // `alpha > 0` and `alpha >= 0` return the same rate: blend clamps α to 0.
+    if n_blocks <= 1 && alpha.is_finite() {
         warm = match (warm, confirm_floor) {
             (Some(rate), Some(floor)) => Some(rate.max(floor)),
             (None, Some(floor)) => Some(floor),
@@ -391,9 +393,6 @@ pub fn fee_at_target_sat_kvb(depths: &[u32], rates: &[Option<u64>], target: u32)
     let n = depths.len();
     if n == 0 || rates.len() != n {
         return None;
-    }
-    if target > depths[n - 1] {
-        return rates.iter().copied().rev().find_map(|r| r);
     }
     let idx = depths.partition_point(|&d| d < target);
     if idx >= n {

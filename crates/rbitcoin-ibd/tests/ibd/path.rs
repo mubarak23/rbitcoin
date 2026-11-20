@@ -529,3 +529,272 @@ fn seed_rewinds_tip_to_lca_on_heavier_sibling() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+fn path_pin_hub(
+    label: &str,
+) -> (
+    rbitcoin_query::testutil::TempDir,
+    rbitcoin_net::chain::ChainHub,
+) {
+    rbitcoin_net::chain::tiny_regtest_hub_labeled(label)
+}
+
+fn resume_row(
+    height: u32,
+    hash: BlockHash,
+    prev: BlockHash,
+    has_body: bool,
+) -> rbitcoin_query::ResumeWorkEntry {
+    rbitcoin_query::ResumeWorkEntry {
+        height,
+        hash: hash.to_byte_array(),
+        prev_hash: prev.to_byte_array(),
+        header_fk: rbitcoin_primitives::Fk(0),
+        has_body,
+    }
+}
+
+/// Eight explore tips fill the locator. `>=` to `<` keeps only the first.
+#[test]
+fn path_pin_eight_explore_tips_fill_the_locator() {
+    let mut st = IbdWorkState::new(Vec::new(), None, Some(0));
+    for n in 1u8..=8 {
+        st.reorg
+            .register_explore(std::iter::empty::<BlockHash>(), Some(h(n)));
+    }
+    let tips = work_path_tips(&st);
+    assert_eq!(tips.len(), 8, "{tips:?}");
+}
+
+/// The confirmed tip row is not a sibling. `&&` to `||` marks it as one.
+#[test]
+fn path_pin_the_tip_row_is_not_a_sibling_fork() {
+    let (dir, hub) = path_pin_hub("path-pin-tip-row");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let above = h(2);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    rbitcoin_ibd::ibd::path::install_resume(
+        &mut st,
+        &hub,
+        &[
+            resume_row(0, tip, BlockHash::from_byte_array([0u8; 32]), true),
+            resume_row(1, above, tip, false),
+        ],
+        false,
+    );
+    assert!(
+        st.reorg.need_getdata().is_empty(),
+        "{:?}",
+        st.reorg.need_getdata()
+    );
+    let _ = dir;
+}
+
+/// A different hash at the tip height is a sibling. `<=` to `>` misses it.
+#[test]
+fn path_pin_a_sibling_at_the_tip_height_is_a_fork() {
+    let (dir, hub) = path_pin_hub("path-pin-sib-height");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let sib = h(0x21);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    rbitcoin_ibd::ibd::path::install_resume(
+        &mut st,
+        &hub,
+        &[resume_row(0, sib, tip, false)],
+        false,
+    );
+    assert_eq!(st.reorg.need_getdata(), vec![sib]);
+    let _ = dir;
+}
+
+/// A sibling that already has a body is not fetched. Delete `!` fetches it.
+#[test]
+fn path_pin_a_sibling_body_is_not_fetched_again() {
+    let (dir, hub) = path_pin_hub("path-pin-sib-body");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let sib = h(0x22);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    rbitcoin_ibd::ibd::path::install_resume(&mut st, &hub, &[resume_row(0, sib, tip, true)], false);
+    assert!(st.reorg.need_getdata().is_empty());
+    let _ = dir;
+}
+
+/// A body above a sibling is not explore. The first `&&` to `||` fetches it.
+#[test]
+fn path_pin_a_body_above_the_sibling_is_not_fetched() {
+    let (dir, hub) = path_pin_hub("path-pin-above-body");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let sib = h(0x23);
+    let above = h(0x24);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    rbitcoin_ibd::ibd::path::install_resume(
+        &mut st,
+        &hub,
+        &[
+            resume_row(0, sib, tip, true),
+            resume_row(1, above, sib, true),
+        ],
+        false,
+    );
+    assert!(st.reorg.need_getdata().is_empty());
+    let _ = dir;
+}
+
+/// Four header-only rows above a sibling, not five. `<` to `<=`, `>`, or `==`
+/// changes the count. The second `&&` to `||` also keeps the fifth, because
+/// `len < 4` becomes true on its own once the sibling flag is set.
+#[test]
+fn path_pin_explore_need_stops_before_five() {
+    let (dir, hub) = path_pin_hub("path-pin-need-cap");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let sib = h(0x30);
+    let mut path = vec![resume_row(0, sib, tip, true)];
+    let mut prev = sib;
+    for n in 1u8..=5 {
+        let hash = h(0x30 + n);
+        path.push(resume_row(u32::from(n), hash, prev, false));
+        prev = hash;
+    }
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    rbitcoin_ibd::ibd::path::install_resume(&mut st, &hub, &path, false);
+    let need = st.reorg.need_getdata();
+    assert_eq!(need.len(), 4, "{need:?}");
+    assert!(!need.contains(&h(0x35)));
+    let _ = dir;
+}
+
+/// The height slot is invalid, so a valid sibling is planted. `&&` to `||`
+/// and delete of the first `!` leave the slot.
+#[test]
+fn path_pin_an_invalid_occupant_yields() {
+    let (dir, hub) = path_pin_hub("path-pin-invalid-slot");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let bad = h(0x41);
+    let good = h(0x42);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    st.record_height(bad, 1);
+    st.reorg.invalid.mark(bad.to_byte_array());
+    st.hash_height.insert(good, 1);
+    st.path_prev.insert(good, tip);
+    let found = rbitcoin_ibd::ibd::path::plant_find_valid_child(&st, &hub);
+    assert_eq!(found.map(|row| row.0), Some(good));
+    let _ = dir;
+}
+
+/// The height slot is rejected. Delete of the second `!` leaves it.
+#[test]
+fn path_pin_a_rejected_occupant_yields() {
+    let (dir, hub) = path_pin_hub("path-pin-rejected-slot");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let bad = h(0x43);
+    let good = h(0x44);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    st.record_height(bad, 1);
+    st.body.mark_rejected(bad);
+    st.hash_height.insert(good, 1);
+    st.path_prev.insert(good, tip);
+    let found = rbitcoin_ibd::ibd::path::plant_find_valid_child(&st, &hub);
+    assert_eq!(found.map(|row| row.0), Some(good));
+    let _ = dir;
+}
+
+/// An invalid candidate with an empty slot is not planted. `||` to `&&` plants it.
+#[test]
+fn path_pin_an_invalid_candidate_is_not_planted() {
+    let (dir, hub) = path_pin_hub("path-pin-invalid-cand");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let bad = h(0x45);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    st.hash_height.insert(bad, 1);
+    st.reorg.invalid.mark(bad.to_byte_array());
+    st.path_prev.insert(bad, tip);
+    assert!(rbitcoin_ibd::ibd::path::plant_find_valid_child(&st, &hub).is_none());
+    let _ = dir;
+}
+
+/// An invalid header is not committed onto the path. `||` to `&&` commits it.
+#[test]
+fn path_pin_an_invalid_header_is_not_committed() {
+    let (dir, hub) = path_pin_hub("path-pin-commit");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let bad = h(0x46);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    st.reorg.invalid.mark(bad.to_byte_array());
+    assert!(!rbitcoin_ibd::ibd::path::plant_commit_header(
+        &mut st, &hub, bad, 1, tip
+    ));
+    let _ = dir;
+}
+
+/// An invalid successor is not indexed. The first `&&` to `||` says it is.
+#[test]
+fn path_pin_an_invalid_successor_is_not_indexed() {
+    let (dir, hub) = path_pin_hub("path-pin-succ-invalid");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let bad = h(0x47);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    st.height_to_hash.insert(1, bad);
+    st.reorg.invalid.mark(bad.to_byte_array());
+    assert!(!rbitcoin_ibd::ibd::path::walk_successor_indexed(&st, &hub));
+    let _ = dir;
+}
+
+/// A confirmed successor is not indexed. The second `&&` to `||` says it is.
+#[test]
+fn path_pin_a_confirmed_successor_is_not_indexed() {
+    let (dir, hub) = path_pin_hub("path-pin-succ-confirmed");
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let block = rbitcoin_consensus::mine_empty_regtest(gen, 1_300_000_100, 1);
+    hub.accept_block(block.clone()).unwrap();
+    let hash = block.block_hash();
+    let mut st = IbdWorkState::new(Vec::new(), hub.tip_hash(), hub.tip_height());
+    let next = hub.tip_height().unwrap().saturating_add(1);
+    st.height_to_hash.insert(next, hash);
+    assert!(!rbitcoin_ibd::ibd::path::walk_successor_indexed(&st, &hub));
+    let _ = dir;
+}
+
+/// An invalid stored header is not appended. The first `||` to `&&` appends it.
+#[test]
+fn path_pin_an_invalid_header_is_not_appended() {
+    let (dir, hub) = path_pin_hub("path-pin-append-invalid");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let bad = h(0x48);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    st.height_to_hash.insert(1, bad);
+    st.reorg.invalid.mark(bad.to_byte_array());
+    assert_eq!(
+        rbitcoin_ibd::ibd::path::append_stored_headers(&mut st, &hub),
+        0
+    );
+    let _ = dir;
+}
+
+/// A rejected stored header is not appended. The second `||` to `&&` appends it.
+#[test]
+fn path_pin_a_rejected_header_is_not_appended() {
+    let (dir, hub) = path_pin_hub("path-pin-append-rejected");
+    hub.ensure_genesis().unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let bad = h(0x49);
+    let mut st = IbdWorkState::new(Vec::new(), Some(tip), Some(0));
+    st.height_to_hash.insert(1, bad);
+    st.body.mark_rejected(bad);
+    assert_eq!(
+        rbitcoin_ibd::ibd::path::append_stored_headers(&mut st, &hub),
+        0
+    );
+    let _ = dir;
+}

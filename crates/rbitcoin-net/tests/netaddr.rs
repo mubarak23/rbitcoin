@@ -36,6 +36,11 @@ fn netaddr_onion_parse_roundtrip() {
     );
     assert!("short.onion:8333".parse::<NetAddr>().is_err());
     assert!("not-an-addr".parse::<NetAddr>().is_err());
+    let upper = s.to_ascii_uppercase();
+    assert_eq!(upper.parse::<NetAddr>().unwrap(), a, "{upper}");
+    assert_eq!(strip_onion_suffix(".onion"), Some(""));
+    assert_eq!(strip_onion_suffix("ab.onion"), Some("ab"));
+    assert!(b32_decode("aaaaaaaa").is_none());
 }
 
 #[test]
@@ -76,6 +81,8 @@ fn netaddr_i2p_addrv2_roundtrip() {
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b32.i2p:1"
     );
     assert!("short.b32.i2p:1".parse::<NetAddr>().is_err());
+    let upper = zeros.to_string().to_ascii_uppercase();
+    assert_eq!(upper.parse::<NetAddr>().unwrap(), zeros, "{upper}");
 }
 
 /// Core SAM 3.1 advertises I2P with port 0. Other networks still reject port 0.

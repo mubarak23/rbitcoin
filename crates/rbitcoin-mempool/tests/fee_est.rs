@@ -338,6 +338,19 @@ fn monotone_desc_clips_rises() {
     assert_eq!(flat, [4_000, 4_000, 1_000]);
 }
 
+#[test]
+fn bucket_edge_and_strict_floor_keep_the_ladder() {
+    assert_eq!(FEE_BUCKET_EDGES_SAT_PER_KVB[100], 1_000);
+    let floor = FEE_BUCKET_EDGES_SAT_PER_KVB[0];
+    assert_eq!(first_bucket_above(floor), 1);
+}
+
+#[test]
+fn fee_at_target_rejects_a_table_whose_rates_do_not_match() {
+    assert_eq!(fee_at_target_sat_kvb(&[], &[], 1), None);
+    assert_eq!(fee_at_target_sat_kvb(&[1], &[], 1), None);
+}
+
 /// Bucket count is one past the edges. `estimatesmartfee` on an empty
 /// pool returns "Insufficient data" and does not read this count. A warm
 /// pool's published rate indexes these buckets.

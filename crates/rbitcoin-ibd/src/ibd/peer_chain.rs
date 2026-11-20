@@ -265,12 +265,10 @@ impl PeerChain {
         };
         let start = height.saturating_add(skip as u32);
         let end = self.from.saturating_add(self.announced.len() as u32);
-        // The kept run continues only from the parent of `start`.
-        let parent = match skip {
-            0 => headers[0].prev_blockhash,
-            k => hashes[k - 1],
-        };
-        let keep = (start > self.from && start <= end)
+        // `from` is already at least `tip + 1`. A reply that began at or
+        // below the tip has `start == tip + 1`, so it replaces the run.
+        let parent = headers[0].prev_blockhash;
+        let keep = (skip == 0 && start > self.from && start <= end)
             .then(|| (start - self.from) as usize)
             .filter(|&k| self.announced[k - 1] == parent);
         match keep {

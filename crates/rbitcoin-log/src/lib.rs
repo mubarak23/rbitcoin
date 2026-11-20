@@ -142,7 +142,6 @@ impl Level {
             "info" | "i" => Some(Level::Info),
             "debug" | "d" => Some(Level::Debug),
             "trace" | "t" => Some(Level::Trace),
-            "off" | "none" | "0" => None,
             _ => None,
         }
     }
@@ -259,8 +258,9 @@ pub fn civil_utc(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let days = hours / 24;
 
     // Howard Hinnant civil-from-days (not the naive 365.25 approximation).
+    // `days` comes from a `u64` second count, so `z` stays non-negative.
     let z = days as i64 + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let era = z / 146_097;
     let doe = (z - era * 146_097) as u64;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = (yoe as i64) + era * 400;
@@ -303,6 +303,12 @@ thread_local! {
         const { RefCell::new([None; REPEATED_INFO_SLOTS]) };
 }
 
+/// True when `now` is still inside the one-second repeat gap after `prev`.
+#[doc(hidden)]
+pub fn repeated_info_in_gap(prev: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(prev) < Duration::from_millis(REPEATED_INFO_GAP_MS)
+}
+
 /// Forget this thread's last emit time. Tests start a burst from an empty window.
 #[doc(hidden)]
 pub fn reset_repeated_info() {
@@ -328,9 +334,7 @@ fn log_repeated(level: Level, which: RepeatedInfo, args: fmt::Arguments<'_>) {
     let emit = REPEATED_INFO_AT.with(|slot| {
         let mut slot = slot.borrow_mut();
         let prev = slot[which as usize];
-        if prev.is_some_and(|t| {
-            now.saturating_duration_since(t) < Duration::from_millis(REPEATED_INFO_GAP_MS)
-        }) {
+        if prev.is_some_and(|t| repeated_info_in_gap(t, now)) {
             return false;
         }
         slot[which as usize] = Some(now);

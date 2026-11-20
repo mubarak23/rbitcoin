@@ -67,4 +67,18 @@ fn display_and_source_surface() {
     assert!(connect.is_mutated(), "{connect}");
     let ordinary = NetError::Consensus("bad-txns-inputs-missingorspent".into());
     assert!(!ordinary.is_mutated(), "{ordinary}");
+
+    let rules = rbitcoin_consensus::ConsensusError::BadTx("bad-txnmrklroot");
+    let ruled = NetError::ConnectFailed {
+        hash: [3u8; 32],
+        msg: "bad-txns-inputs-missingorspent".into(),
+        rules: Some(rules.clone()),
+    };
+    assert!(
+        matches!(ruled.consensus_rules(), Some(rbitcoin_consensus::ConsensusError::BadTx(s)) if *s == "bad-txnmrklroot")
+    );
+    assert!(
+        ruled.is_mutated(),
+        "a mutated rule is mutated even when the message is not"
+    );
 }

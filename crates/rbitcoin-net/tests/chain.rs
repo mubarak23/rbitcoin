@@ -639,18 +639,6 @@ fn conflicting_mempool_spend_leaves_with_the_block() {
 #[test]
 fn generate_accepts_its_cap_and_refuses_one_more() {
     let (_dir, hub) = tmp_hub();
-    let err = hub
-        .generate_to_script(
-            ChainHub::GENERATE_MAX_BLOCKS + 1,
-            ScriptBuf::from_bytes(vec![0x51]),
-            vec![],
-        )
-        .expect_err("one past the production cap");
-    assert!(
-        err.to_string().contains("nblocks too large (max 10000)"),
-        "{err}"
-    );
-    assert_eq!(hub.tip_height(), None, "refusal must not mine");
     let mined = hub
         .generate_to_script_limited(2, ScriptBuf::from_bytes(vec![0x51]), vec![], 2)
         .expect("the cap itself");
@@ -664,6 +652,20 @@ fn generate_accepts_its_cap_and_refuses_one_more() {
         "{err}"
     );
     assert_eq!(hub.tip_height(), Some(2));
+
+    let (_dir, fresh) = tmp_hub();
+    let err = fresh
+        .generate_to_script(
+            ChainHub::GENERATE_MAX_BLOCKS + 1,
+            ScriptBuf::from_bytes(vec![0x51]),
+            vec![],
+        )
+        .expect_err("one past the production cap");
+    assert!(
+        err.to_string().contains("nblocks too large (max 10000)"),
+        "{err}"
+    );
+    assert_eq!(fresh.tip_height(), None, "refusal must not mine");
 }
 
 /// Block 1 on a real clock is still the pow limit (the min-difficulty gap).
@@ -7291,6 +7293,191 @@ fn accept_err_string_bags_classify_time_and_warn() {
     assert!(!accept_err_is_warn_and_apply(&NetError::Consensus(
         "high-hash".into()
     )));
+}
+
+/// `blocks_only` returns before maintenance. `||` to `&&` starts it when
+/// the tip has already left IBD.
+#[test]
+fn chain_pin_blocks_only_does_not_maintain_the_pool() {
+    let (dir, hub) = tmp_hub();
+    hub.confirm_empty_regtest(1).unwrap();
+    assert!(!hub.in_ibd(), "a fresh tip has left IBD");
+    hub.set_blocks_only(true);
+    let mp =
+        rbitcoin_net::tx_relay::MempoolHub::open(dir.path().join("mp"), Arc::clone(&hub.query))
+            .unwrap();
+    assert!(hub.attach_mempool(Arc::clone(&mp)).is_ok());
+    hub.maintain_pool_after_ibd(true);
+    assert!(
+        !mp.pool_maintained(),
+        "blocksonly must not start pool maintenance"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A marked grandparent of another mark is under that mark. Deleting `!`
+/// stops the single walk on the first new ancestor, so the grandparent is
+/// listed. The child must not also be a header tip: that second walk reaches
+/// the grandparent either way.
+#[test]
+fn chain_pin_a_marked_grandparent_is_not_a_tip() {
+    let (dir, hub) = tmp_hub();
+    hub.ensure_genesis().unwrap();
+    let gen = hub.tip_hash().unwrap();
+    let time = hub.tip_header().unwrap().time;
+    let a = mine(gen, time.saturating_add(100), 1);
+    hub.ensure_header(&a.header).unwrap();
+    let b = mine(a.block_hash(), time.saturating_add(200), 2);
+    hub.ensure_header(&b.header).unwrap();
+    let c = mine(b.block_hash(), time.saturating_add(300), 3);
+    hub.ensure_header(&c.header).unwrap();
+    assert!(hub.note_failed_connect(a.block_hash()));
+    assert!(hub.note_failed_connect(c.block_hash()));
+    // `chaintips` walks every listed tip and then every mark. Leaving C as a
+    // header tip walks it twice, and the second pass still reaches A when
+    // `!` is gone. A mark that is not itself a tip is the one walk.
+    hub.header_tips.write().unwrap().remove(&c.block_hash());
+    let tips = hub.chaintips();
+    assert!(
+        tips.iter()
+            .any(|t| t.hash == c.block_hash() && t.status == "invalid"),
+        "the marked child is an invalid tip: {tips:?}"
+    );
+    assert!(
+        !tips.iter().any(|t| t.hash == a.block_hash()),
+        "the marked grandparent is under that tip: {tips:?}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Off a retarget boundary, bits that are not the pow limit are the answer.
+/// `||` to `&&` ignores those bits and returns the cached parent walk.
+#[test]
+fn chain_pin_harder_bits_off_retarget_skip_the_cache() {
+    let (_dir, hub) = tmp_hub();
+    let limit = hub.params.pow_limit.to_compact_lossy();
+    let interval = hub.params.difficulty_adjustment_interval();
+    assert!(interval > 1, "height 1 must not be a retarget");
+    let mut header = genesis_block(&hub.params).header;
+    header.bits = CompactTarget::from_consensus(0x1d00ffff);
+    header.prev_blockhash = BlockHash::from_byte_array([0xab; 32]);
+    assert_ne!(header.bits, limit);
+    let mut in_batch = HashMap::new();
+    in_batch.insert(
+        header.prev_blockhash.to_byte_array(),
+        HeaderSyncNode {
+            fk: Fk(0),
+            header,
+            height: Some(0),
+            min_diff_walk: Some(limit),
+        },
+    );
+    assert_eq!(hub.min_diff_walk_bits(&header, 1, &in_batch), header.bits);
+}
+
+/// Invalidating a tip that was already out of IBD does not start maintenance.
+/// `&&` to `||` does, because the tip hash is present.
+#[test]
+fn chain_pin_invalidating_a_fresh_tip_does_not_maintain() {
+    let (dir, hub) = tmp_hub();
+    hub.confirm_empty_regtest(1).unwrap();
+    assert!(!hub.in_ibd(), "a fresh tip has left IBD");
+    let tip = hub.tip_hash().unwrap();
+    let mp =
+        rbitcoin_net::tx_relay::MempoolHub::open(dir.path().join("mp"), Arc::clone(&hub.query))
+            .unwrap();
+    assert!(hub.attach_mempool(Arc::clone(&mp)).is_ok());
+    hub.invalidate_block_inner(tip).unwrap();
+    assert!(
+        !mp.pool_maintained(),
+        "leaving a fresh tip does not start pool maintenance"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// No outer template hold, so maintenance runs. Deleting `!` skips it.
+#[test]
+fn chain_pin_a_reorg_without_a_hold_maintains_the_pool() {
+    let (dir, hub) = tmp_hub();
+    hub.confirm_empty_regtest(1).unwrap();
+    assert!(!hub.in_ibd(), "a fresh tip has left IBD");
+    let mp =
+        rbitcoin_net::tx_relay::MempoolHub::open(dir.path().join("mp"), Arc::clone(&hub.query))
+            .unwrap();
+    assert!(hub.attach_mempool(Arc::clone(&mp)).is_ok());
+    hub.finish_branch_reorg(BranchReorg::without_hold(), true);
+    assert!(
+        mp.pool_maintained(),
+        "a reorg with no template hold maintains the pool"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The RPC tip wait follows the job that is running. An empty body returns
+/// while that job still holds the lane.
+#[test]
+fn chain_pin_rpc_tip_wait_blocks_until_the_job_finishes() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let (_dir, hub) = tmp_hub();
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        rbitcoin_net::tip_accept::run_on_tip_accept(move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+    });
+    started_rx.recv().unwrap();
+    let seen = rbitcoin_net::tip_accept::subscribe_wait_seen();
+    let (id_tx, id_rx) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        id_tx.send(thread::current().id()).unwrap();
+        hub.wait_tip_stable_for_rpc();
+    });
+    let id = id_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("waiter started");
+    assert!(
+        rbitcoin_net::tip_accept::wait_seen_from(&seen, id, Duration::from_secs(2)),
+        "wait_tip_stable_for_rpc did not observe the running job"
+    );
+    assert!(
+        !waiter.is_finished(),
+        "wait_tip_stable_for_rpc returned while a tip-accept job was running"
+    );
+    release_tx.send(()).unwrap();
+    waiter.join().expect("wait");
+    worker.join().expect("job");
+}
+
+/// A disconnect that fails before the tip moves keeps the confirmed mark.
+/// `<` to `<=` drops it while the block is still the tip.
+#[test]
+fn chain_pin_a_stuck_disconnect_keeps_the_confirmed_mark() {
+    let (dir, hub) = tmp_hub();
+    hub.confirm_empty_regtest(1).unwrap();
+    let tip = hub.tip_hash().unwrap();
+    let height = hub.tip_height().unwrap();
+    assert!(hub.confirmed.read().unwrap().contains(&tip));
+    hub.query
+        .set_pruneheight(Some(Height(height)))
+        .expect("prune height");
+    let err = hub
+        .disconnect_to(0)
+        .expect_err("the tip block is inside the prune window");
+    assert!(
+        err.to_string().contains("pruned") || err.is_local_fault(),
+        "{err}"
+    );
+    assert_eq!(hub.tip_height(), Some(height));
+    assert!(
+        hub.confirmed.read().unwrap().contains(&tip),
+        "the tip did not move, so the confirmed mark stays"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

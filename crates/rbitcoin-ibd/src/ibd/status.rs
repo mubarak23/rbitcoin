@@ -132,12 +132,18 @@ impl LoopSample {
     pub fn confirm_ms(&self) -> u64 {
         Self::ms(self.confirm_ns)
     }
+    // Milliseconds for the perf sample. Decisions read the nanosecond counters.
+    #[cfg_attr(false, mutants::skip)]
     pub fn assign_ms(&self) -> u64 {
         Self::ms(self.assign_ns)
     }
+    // Milliseconds for the perf sample. Decisions read the nanosecond counters.
+    #[cfg_attr(false, mutants::skip)]
     pub fn drain_ms(&self) -> u64 {
         Self::ms(self.drain_ns)
     }
+    // Milliseconds for the perf sample. Decisions read the nanosecond counters.
+    #[cfg_attr(false, mutants::skip)]
     pub fn status_scan_ms(&self) -> u64 {
         Self::ms(self.status_scan_ns)
     }

@@ -14,7 +14,7 @@ use crate::{NetAddr, OnlyNet};
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::Inventory;
 use bitcoin::p2p::Magic;
-use bitcoin::Transaction;
+use bitcoin::{Transaction, Txid};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -185,6 +185,23 @@ pub async fn isolated_broadcast_known_tx(
 
 pub const ISOLATED_RESEND_SWEEP: Duration = Duration::from_secs(30);
 
+// Backlog warn and its lap counter. Sends wait on the dial, not this counter.
+#[cfg_attr(false, mutants::skip)]
+fn note_isolated_backlog(mp: &MempoolHub, behind: usize, txid: Txid, warned: &mut bool) {
+    // Each send can spend `HANDSHAKE_TIMEOUT` per peer, so a queue this deep
+    // waits minutes.
+    const BACKLOG_WARN: usize = 32;
+    if behind < BACKLOG_WARN {
+        *warned = false;
+        return;
+    }
+    mp.note_isolated_lap(IsolatedLap::Lagged);
+    if !*warned {
+        *warned = true;
+        rbitcoin_log::warn!("isolated broadcast is behind: {behind} local txs wait after {txid}");
+    }
+}
+
 pub fn spawn_isolated_broadcast_loop(
     mp: Arc<MempoolHub>,
     dialer: Dialer,
@@ -195,9 +212,6 @@ pub fn spawn_isolated_broadcast_loop(
     if !mp.isolated_broadcast() {
         return tokio::spawn(async {});
     }
-    // Each send can spend `HANDSHAKE_TIMEOUT` per peer, so a queue this deep
-    // waits minutes.
-    const BACKLOG_WARN: usize = 32;
     tokio::spawn(async move {
         let mut warned = false;
         let mut sweep = tokio::time::interval(resend_sweep);
@@ -210,17 +224,7 @@ pub fn spawn_isolated_broadcast_loop(
                     continue;
                 }
             };
-            if behind < BACKLOG_WARN {
-                warned = false;
-            } else {
-                mp.note_isolated_lap(IsolatedLap::Lagged);
-                if !warned {
-                    warned = true;
-                    rbitcoin_log::warn!(
-                        "isolated broadcast is behind: {behind} local txs wait after {txid}"
-                    );
-                }
-            }
+            note_isolated_backlog(&mp, behind, txid, &mut warned);
             // A real read: `try_read` cannot tell a held write from a tx that
             // left, and `take` already marked this txid taken. A failed try
             // is the lagged lap; the read then waits on the same guard.

@@ -64,6 +64,17 @@ fn asmap_loopback_reports_one_two_and_the_default() {
     assert_eq!(asn(127, 0, 0, 3), 9);
 }
 
+/// Opened-asmap log in `asmap_loopback_peers_report_their_asn`.
+#[test]
+fn loaded_asmap_len_and_digest_match_the_open_log() {
+    let lone = AsMap::from_bytes(LONE_RETURN_ASMAP.to_vec()).expect("lone return");
+    assert_eq!(lone.len(), 3);
+    assert_eq!(lone.digest_hex8(), "709e80c8");
+    let loopback = AsMap::from_bytes(LOOPBACK_ASMAP.to_vec()).expect("loopback");
+    assert_eq!(loopback.len(), LOOPBACK_ASMAP.len());
+    assert_eq!(loopback.digest_hex8(), "0d2045c8");
+}
+
 #[test]
 fn asmap_jump_follows_the_ip_bit() {
     let ret1 = instr_return(1);

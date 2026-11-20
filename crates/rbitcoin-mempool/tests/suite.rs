@@ -4,6 +4,7 @@ mod fee_analog;
 mod fee_est;
 mod fee_flow;
 mod graph;
+mod linearize_order;
 mod orphanage;
 mod packed;
 mod removed;

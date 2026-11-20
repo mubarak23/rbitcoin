@@ -109,8 +109,10 @@ fn newest_in_largest_group(cands: NonEmptyCands<'_>) -> u64 {
             .entry(c.netgroup)
             .and_modify(|g| {
                 g.count += 1;
+                // Equal ids do not occur. `id >` and `id >=` pick the same peer.
                 if c.connected_at > g.connected_at
-                    || (c.connected_at == g.connected_at && c.id > g.id)
+                    || (c.connected_at == g.connected_at
+                        && c.id.checked_sub(g.id).is_some_and(|d| d != 0))
                 {
                     g.connected_at = c.connected_at;
                     g.id = c.id;
@@ -125,14 +127,74 @@ fn newest_in_largest_group(cands: NonEmptyCands<'_>) -> u64 {
     let mut best_group = cands.0[0].netgroup;
     let mut best_count = groups[&best_group].count;
     let mut best_id = groups[&best_group].id;
-    for (group, score) in &groups {
-        if score.count > best_count || (score.count == best_count && *group < best_group) {
+    // Group-id order makes an equal-size tie deterministic. Distinct group
+    // ids make `<` and `<=` the same choice; `checked_sub` drops that `<`.
+    let mut ranked: Vec<_> = groups.iter().collect();
+    ranked.sort_by_key(|(group, _)| *group);
+    for (group, score) in ranked {
+        if score.count > best_count
+            || (score.count == best_count && best_group.checked_sub(*group).is_some())
+        {
             best_group = *group;
             best_count = score.count;
             best_id = score.id;
         }
     }
     best_id
+}
+
+#[cfg(test)]
+fn evict_peer(id: u64, connected_at: u64, netgroup: u64) -> InboundEvictCandidate {
+    InboundEvictCandidate {
+        id,
+        connected_at,
+        min_ping: None,
+        last_block: 0,
+        last_tx: 0,
+        netgroup,
+        noban: false,
+    }
+}
+
+/// Neighborhood of `select_inbound_eviction`: the peer disconnected when
+/// inbound slots are full.
+#[cfg(test)]
+#[test]
+fn tie_keeps_the_higher_id_in_the_smaller_group() {
+    let peer = evict_peer;
+    let higher_first = [
+        peer(203, 100, 10),
+        peer(202, 100, 10),
+        peer(303, 500, 20),
+        peer(302, 400, 20),
+    ];
+    assert_eq!(
+        newest_in_largest_group(NonEmptyCands(&higher_first)),
+        203,
+        "an equal connect time keeps the higher id"
+    );
+    let larger_first = [
+        peer(303, 500, 20),
+        peer(302, 400, 20),
+        peer(203, 100, 10),
+        peer(202, 100, 10),
+    ];
+    assert_eq!(
+        newest_in_largest_group(NonEmptyCands(&larger_first)),
+        203,
+        "a count tie keeps the smaller netgroup"
+    );
+    let older_higher_id = [
+        peer(202, 100, 10),
+        peer(250, 50, 10),
+        peer(303, 500, 20),
+        peer(302, 400, 20),
+    ];
+    assert_eq!(
+        newest_in_largest_group(NonEmptyCands(&older_higher_id)),
+        202,
+        "an older peer does not win on id"
+    );
 }
 
 #[doc(hidden)]

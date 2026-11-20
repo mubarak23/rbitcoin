@@ -17,6 +17,7 @@ fn frame_decode_verack_ignores_checksum() {
         payload: Vec::new(),
     };
     assert!(!frame.decode_is_cpu_heavy());
+    assert_eq!(frame.payload_len(), 0);
     assert!(matches!(frame.decode().payload(), NetworkMessage::Verack));
 }
 
@@ -32,6 +33,10 @@ fn block_hash_from_header_matches_full_block() {
         payload,
     };
     assert!(frame.is_block());
+    assert!(
+        frame.payload_len() > 1,
+        "a block frame is not a 1-byte stub"
+    );
     assert_eq!(frame.block_hash_from_header().expect("header hash"), want);
     match frame.decode().payload() {
         NetworkMessage::Block(b) => assert_eq!(b.block_hash(), want),
@@ -134,6 +139,8 @@ fn core_limits_documented() {
         "a tx payload is not an inv count"
     );
     assert_eq!(MAX_HEADERS_RESULTS, 2_000);
+    assert_eq!(HEADER_WIRE_BYTES, 81);
+    assert_eq!(MAX_HEADERS_CONTENTS, 1 + 12 + 3 + 2_000 * 81);
     assert_eq!(MAX_LOCATOR_SZ, 101);
     // Stricter than rust-bitcoin's 5MB
     const {
@@ -217,6 +224,10 @@ fn frame_helpers_ping_headers_notfound_and_encode_cost() {
         command: *b"block\0\0\0\0\0\0\0",
         payload: vec![0u8; 10],
     };
+    assert!(
+        bad.block_hash_from_header().is_none(),
+        "a short block payload is not a header"
+    );
     match bad.decode().payload() {
         NetworkMessage::Unknown { command, .. } => {
             assert_eq!(command.to_string(), "block");

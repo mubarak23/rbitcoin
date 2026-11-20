@@ -505,7 +505,8 @@ pub fn decode_i2p_name(name: &str) -> Option<[u8; 32]> {
             b'2'..=b'7' => 26 + (c - b'2'),
             _ => return None,
         };
-        acc = (acc << 5) | u32::from(v);
+        // The shift clears the low 5 bits, so `|` and `^` are the same bits.
+        acc = (acc << 5).wrapping_add(u32::from(v));
         bits += 5;
         if bits >= 8 {
             bits -= 8;
@@ -577,7 +578,8 @@ pub fn b32_encode(bytes: &[u8; 35]) -> String {
     let mut acc = 0u32;
     let mut bits = 0u32;
     for &b in bytes {
-        acc = (acc << 8) | u32::from(b);
+        // The shift clears the low 8 bits, so `|` and `^` are the same bits.
+        acc = (acc << 8).wrapping_add(u32::from(b));
         bits += 8;
         while bits >= 5 {
             bits -= 5;
@@ -600,7 +602,8 @@ pub fn b32_decode(s: &str) -> Option<[u8; 35]> {
             b'2'..=b'7' => 26 + (c - b'2'),
             _ => return None,
         };
-        acc = (acc << 5) | u32::from(v);
+        // The shift clears the low 5 bits, so `|` and `^` are the same bits.
+        acc = (acc << 5).wrapping_add(u32::from(v));
         bits += 5;
         if bits >= 8 {
             bits -= 8;

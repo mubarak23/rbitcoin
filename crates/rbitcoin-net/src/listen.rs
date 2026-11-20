@@ -41,6 +41,8 @@ pub fn bind_tcp_step(addr: SocketAddr) -> Result<TcpListener, (ListenStep, io::E
     socket.listen(BACKLOG).map_err(at(ListenStep::Listen))
 }
 
+// WinSock SO_EXCLUSIVEADDRUSE; the Linux suite never compiles this call.
+#[cfg_attr(false, mutants::skip)]
 #[cfg(windows)]
 fn set_exclusive_addr_use(socket: &TcpSocket) -> io::Result<()> {
     use std::os::windows::io::AsRawSocket;

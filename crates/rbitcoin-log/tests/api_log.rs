@@ -1,3 +1,4 @@
+use rbitcoin_log::api_log::{redact_ext_privkeys, redact_quoted_hex64, secret_cover_end};
 use rbitcoin_log::PARAMS_MAX;
 use rbitcoin_log::*;
 use std::sync::Mutex;
@@ -191,4 +192,89 @@ fn logged_prefix_redacts_a_straddling_secret_and_drops_one_past_the_cap() {
         "a secret past the cap is not part of the logged prefix: {far_line}"
     );
     assert!(!far_line.contains("xprv"), "{far_line}");
+}
+
+#[test]
+fn ext_key_scan_keeps_a_bare_tag_and_stops_at_the_cap() {
+    // Tag sits at index 3 so `i * 4` starts past the tag and still clears `j > i + 4`.
+    let bare = "abcxprv!";
+    assert_eq!(redact_ext_privkeys(bare), bare);
+    assert_eq!(secret_cover_end("rpc", bare, bare.len()), None);
+    assert_eq!(
+        secret_cover_end("blockchain.silentpayments.unsubscribe", "abc", 10),
+        None
+    );
+    let cap = 8usize;
+    let key = format!("xprv{}", "1".repeat(8));
+    let at_cap = format!("{}{key}", "a".repeat(cap));
+    assert_eq!(secret_cover_end("rpc", &at_cap, cap), None);
+    assert_eq!(secret_cover_end("rpc", "abc", 10), None);
+    let keyed = format!("ab{key}!!");
+    let red = redact_ext_privkeys(&keyed);
+    assert!(!red.contains(&key), "{red}");
+    assert!(red.starts_with("ab"), "{red}");
+    assert!(red.ends_with("!!"), "{red}");
+}
+
+#[test]
+fn quoted_hex_scan_covers_each_secret_and_leaves_a_short_quote() {
+    let hex = "ab".repeat(32);
+    let quoted = format!("\"{hex}\"");
+    let short = format!("\"{hex}");
+    assert_eq!(redact_quoted_hex64(&short), short);
+    let one = format!("zz{quoted}");
+    assert_eq!(redact_quoted_hex64(&one), "zz\"<redacted>\"");
+    let both = format!("zz{quoted}{quoted}");
+    assert_eq!(
+        redact_quoted_hex64(&both).matches("<redacted>").count(),
+        2,
+        "{both}"
+    );
+    let sneak = format!("Z{hex}\"");
+    assert_eq!(redact_quoted_hex64(&sneak), sneak);
+
+    assert_eq!(
+        secret_cover_end("rpc", &quoted, quoted.len()),
+        None,
+        "a non-scan method does not cover a quoted hex"
+    );
+    assert_eq!(
+        secret_cover_end(
+            "blockchain.silentpayments.unsubscribe",
+            "hello",
+            "hello".len()
+        ),
+        None
+    );
+    let shifted = format!("zz{quoted}");
+    let shifted_end = secret_cover_end(
+        "blockchain.silentpayments.unsubscribe",
+        &shifted,
+        shifted.len(),
+    );
+    assert!(
+        shifted_end.is_some(),
+        "quoted hex not at the start is covered"
+    );
+    // Quote at index 1. `i * 66` is one byte short of `i + 66` and does not spin.
+    let wide = format!("Z\"{hex}\"{}", "M".repeat(500));
+    let end = secret_cover_end("blockchain.silentpayments.unsubscribe", &wide, wide.len())
+        .expect("cover");
+    let expect = (1 + 66 + PARAMS_MAX).min(wide.len());
+    assert_eq!(end, expect, "cover includes PARAMS_MAX after the secret");
+
+    let first_at = 100usize;
+    let second_at = first_at + 66 + PARAMS_MAX + 10;
+    let mut far = "a".repeat(first_at);
+    far.push_str(&quoted);
+    while far.len() < second_at {
+        far.push('b');
+    }
+    far.push_str(&quoted);
+    let far_end = secret_cover_end("blockchain.silentpayments.unsubscribe", &far, far.len())
+        .expect("two secrets");
+    assert!(
+        far_end >= second_at + 66,
+        "second secret at {second_at} is inside the cover {far_end}"
+    );
 }

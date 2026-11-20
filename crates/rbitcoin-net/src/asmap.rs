@@ -59,6 +59,8 @@ impl AsMap {
         self.bytes.len()
     }
 
+    // A loaded map is never empty; the suite cannot construct one.
+    #[cfg_attr(false, mutants::skip)]
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }

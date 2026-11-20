@@ -1222,6 +1222,65 @@ fn body_logical_len_reads_the_word_and_rejects_short() {
     }
 }
 
+/// Accept time is the named slot's record. Slot 0 and slot 1 share an
+/// offset when the stride is divided away.
+#[test]
+fn live_accept_secs_reads_the_named_slot() {
+    let dir = tmp_dir();
+    let mut mp = Mempool::open_or_create(&dir).unwrap();
+    let tx = tiny_tx();
+    let a = Txid::from_byte_array([0xa1; 32]);
+    let b = Txid::from_byte_array([0xb2; 32]);
+    let s0 = mp
+        .append_live_tx(&tx, &a, &tx.compute_wtxid(), 1, 80, 0, 11, &[])
+        .unwrap();
+    let s1 = mp
+        .append_live_tx(&tx, &b, &tx.compute_wtxid(), 1, 80, 0, 22, &[])
+        .unwrap();
+    assert_eq!(mp.live_accept_secs(s0), Some(11));
+    assert_eq!(mp.live_accept_secs(s1), Some(22));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The logical cap is the image's record count. Compaction reads that cap
+/// (`testing_set_slot_cap` in the admit path). One past the image is refused.
+#[test]
+fn slot_cap_matches_the_image_stride() {
+    let dir = tmp_dir();
+    let mut mp = Mempool::open_or_create(&dir).unwrap();
+    let fit = ((mp.slots.len() - SLOTS_HEADER) / SLOT_REC) as u32;
+    mp.testing_set_slot_cap(fit);
+    assert_eq!(mp.meta().slot_cap, fit);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[should_panic(expected = "slot image is shorter than cap")]
+fn slot_cap_refuses_one_past_the_image() {
+    let dir = tmp_dir();
+    let mut mp = Mempool::open_or_create(&dir).unwrap();
+    let fit = ((mp.slots.len() - SLOTS_HEADER) / SLOT_REC) as u32;
+    mp.testing_set_slot_cap(fit + 1);
+}
+
+/// The trust byte is slot 1's own record. Reopen of a warned tx reads it
+/// (`trust_kept` survives restart).
+#[test]
+fn trust_flag_lands_on_its_own_slot() {
+    let dir = tmp_dir();
+    let mut mp = Mempool::open_or_create(&dir).unwrap();
+    let a = Txid::from_byte_array([0xa3; 32]);
+    let b = Txid::from_byte_array([0xb4; 32]);
+    let s0 = put_live(&mut mp, &a, 1, 80);
+    let s1 = put_live(&mut mp, &b, 1, 80);
+    mp.set_slot_trust_kept(s1, true);
+    let live = mp.load_live_txs().unwrap();
+    let row = |slot: u32| live.iter().find(|t| t.slot == slot).unwrap();
+    assert!(!row(s0).trust_kept);
+    assert!(row(s1).trust_kept);
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn live_slot_accept_secs_and_txid_roundtrip() {
     let dir = tmp_dir();

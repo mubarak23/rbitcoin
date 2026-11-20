@@ -220,6 +220,29 @@ fn reject_oversize_duplicate_and_remove() {
     assert!(!o2.contains(&tid3));
 }
 
+/// Promote forgets the in-flight row for the gen it took (`promote_orphans_of`).
+/// Gen 0 is not a take. A matching gen drops the announcer; a stale gen does not.
+#[test]
+fn forget_taken_gen_drops_only_the_matching_take() {
+    let mut o = Orphanage::new();
+    let parent = txid_n(4);
+    let tx = make_orphan(parent, 7);
+    let wtxid = tx.compute_wtxid();
+    let mut miss = BTreeSet::new();
+    miss.insert(parent);
+    assert!(o.insert_from(tx, miss, Some(3)));
+    let taken = o.take_children_of(&parent, |_| false);
+    assert_eq!(taken.len(), 1);
+    let gen = taken[0].taken_gen;
+    assert_ne!(gen, 0);
+    o.forget_taken_gen(&wtxid, 0);
+    assert!(o.has_announcer(3), "gen 0 is not a take");
+    o.forget_taken_gen(&wtxid, gen.wrapping_add(1));
+    assert!(o.has_announcer(3), "a newer take must survive");
+    o.forget_taken_gen(&wtxid, gen);
+    assert!(!o.has_announcer(3), "the taken gen drops the in-flight row");
+}
+
 #[test]
 fn announcers_and_erase_for_peer() {
     let mut o = Orphanage::new();

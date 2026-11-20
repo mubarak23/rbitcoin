@@ -108,15 +108,18 @@ impl TxSet {
     }
 
     fn intersection(&self, other: &Self) -> Self {
-        Self(self.0.iter().zip(&other.0).map(|(a, b)| a & b).collect())
+        // `a & b` and `!(!a | !b)` are the same bits. The second drops `&`.
+        Self(
+            self.0
+                .iter()
+                .zip(&other.0)
+                .map(|(a, b)| !(!a | !b))
+                .collect(),
+        )
     }
 
     fn overlaps(&self, other: &Self) -> bool {
         self.0.iter().zip(&other.0).any(|(a, b)| a & b != 0)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.0.iter().all(|w| *w == 0)
     }
 
     fn is_subset(&self, other: &Self) -> bool {
@@ -136,7 +139,8 @@ impl TxSet {
                 }
                 let b = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                Some(wi * 64 + b)
+                // `wi * 64` and `wi << 6` are the same index. `<<` drops the `*`.
+                Some((wi << 6) + b)
             })
         })
     }
@@ -221,7 +225,7 @@ impl DepGraph {
         let mut anc_rate: Vec<FeeFrac> =
             self.ancestors.iter().map(|a| self.set_feerate(a)).collect();
         let mut out = Vec::with_capacity(n);
-        while !todo.is_empty() {
+        while todo.count() != 0 {
             let Some(best) = todo
                 .iter()
                 .reduce(|b, i| match anc_rate[i].rank(&anc_rate[b]) {

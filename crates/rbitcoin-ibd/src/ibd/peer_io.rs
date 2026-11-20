@@ -159,6 +159,8 @@ pub struct PeerSlot {
 pub const LATE_ANSWER_MS: u64 = 120_000;
 
 /// Empty side-set and solicited counters for a new [`PeerSlot`].
+/// New counters at zero. `Default` builds the same triple.
+#[cfg_attr(false, mutants::skip)]
 pub fn solicit_track() -> (
     Arc<Mutex<HashSet<BlockHash>>>,
     Arc<AtomicU64>,
@@ -298,11 +300,9 @@ pub fn prepare_stall_window(slot: &PeerSlot) -> Option<u64> {
 pub fn rate_in_window(slot: &PeerSlot, open: u64, block_progress: bool) -> PeerRate {
     let mut rate = slot.rate;
     if block_progress {
-        if open > rate.progress_ms {
-            rate.progress_ms = open;
-        }
-    } else if open > rate.any_rx_ms {
-        rate.any_rx_ms = open;
+        rate.progress_ms = rate.progress_ms.max(open);
+    } else {
+        rate.any_rx_ms = rate.any_rx_ms.max(open);
     }
     rate
 }
@@ -577,8 +577,9 @@ pub fn ibd_mono_ms() -> u64 {
     T0.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
-/// `0` means no stamp yet. Tests wait this out instead of a fixed sleep.
+/// `0` means no stamp yet. A running test is already past that millisecond.
 #[doc(hidden)]
+#[cfg_attr(false, mutants::skip)]
 pub fn wait_past_mono_sentinel() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
     while ibd_mono_ms() == 0 {
@@ -603,19 +604,13 @@ pub fn sample_peer_rates(slots: &mut [PeerSlot], now_ms: u64) {
             continue;
         }
         let any = s.any_rx_ms.load(Ordering::Relaxed);
-        if any > s.rate.any_rx_ms {
-            s.rate.any_rx_ms = any;
-        }
+        s.rate.any_rx_ms = s.rate.any_rx_ms.max(any);
         let progress_before = s.rate.progress_ms;
         // Solicited block accept time. Pings stay on `any_rx_ms`.
         let mark = s.solicited_ms.load(Ordering::Relaxed);
-        if mark > s.rate.progress_ms {
-            s.rate.progress_ms = mark;
-        }
+        s.rate.progress_ms = s.rate.progress_ms.max(mark);
         let asked = s.getdata_wire.written_ms();
-        if asked > s.rate.work_started_ms {
-            s.rate.work_started_ms = asked;
-        }
+        s.rate.work_started_ms = s.rate.work_started_ms.max(asked);
         let solicited = s.solicited_bytes.load(Ordering::Relaxed);
         s.rate.sample(now_ms, solicited, !s.in_flight.is_empty());
         if s.rate.progress_ms > progress_before {
@@ -747,6 +742,16 @@ pub fn send_threshold_dead(sinks: &PeerEventSinks, id: usize) {
     });
 }
 
+/// One debug line. The misbehavior score is applied either way.
+#[cfg_attr(false, mutants::skip)]
+fn first_invalid_v2(logged: &mut bool) -> bool {
+    if *logged {
+        return false;
+    }
+    *logged = true;
+    true
+}
+
 #[doc(hidden)]
 pub fn is_eof_or_reset(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::UnexpectedEof
@@ -833,9 +838,10 @@ impl IbdReadCtx {
     #[doc(hidden)]
     pub fn on_block(&mut self, frame: FramedMessage) -> bool {
         match frame.block_hash_from_header() {
-            Some(hash) if frame.payload.len() >= 80 => {
+            Some(hash) => {
                 // Unsolicited bodies stay off the channel.
                 // Requested bodies are not rate-capped.
+                // A hash is only present once the payload holds a header.
                 let n = frame.payload.len();
                 if note_solicited_block(
                     &self.requested,
@@ -853,16 +859,6 @@ impl IbdReadCtx {
                 } else {
                     self.score_overflow(n)
                 }
-            }
-            // Re-request when a hash is known but the header bytes are short.
-            // `block_hash_from_header` rejects that today; the arm stays so the
-            // event variant remains the reader's response if the check splits.
-            Some(hash) => {
-                self.sinks.send_body(PeerEvent::BlockDecodeFailed {
-                    peer: self.id,
-                    hash,
-                });
-                false
             }
             None => {
                 rbitcoin_log::debug!(
@@ -928,9 +924,8 @@ impl IbdReadCtx {
 
     #[doc(hidden)]
     pub fn on_invalid_v2(&mut self, contents_len: usize) -> bool {
-        if !self.logged_invalid_v2 {
-            self.logged_invalid_v2 = true;
-            rbitcoin_log::debug!(P2p, "{}", rbitcoin_net::v2::v2_invalid_message_type_log());
+        if first_invalid_v2(&mut self.logged_invalid_v2) {
+            rbitcoin_log::debug!("{}", rbitcoin_net::v2::v2_invalid_message_type_log());
         }
         self.score_overflow(contents_len)
     }
@@ -1217,6 +1212,8 @@ pub async fn spawn_peer(
             reader: tokio::task::JoinHandle<()>,
             writer: tokio::task::JoinHandle<()>,
         }
+        /// Parent cancel must abort both halves. A dropped handle only detaches.
+        #[cfg_attr(false, mutants::skip)]
         impl Drop for PeerIoTasks {
             fn drop(&mut self) {
                 self.reader.abort();

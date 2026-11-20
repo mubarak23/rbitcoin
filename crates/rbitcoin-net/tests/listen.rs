@@ -26,6 +26,16 @@ async fn reuseaddr_specific_bind_cannot_take_a_wildcard_listen_port() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn listener_fd_reserve_keeps_a_floor_and_a_cap() {
+    use rbitcoin_net::listen::listener_fd_reserve;
+    assert_eq!(listener_fd_reserve(1280), 160);
+    assert_eq!(listener_fd_reserve(1281), 1024);
+    assert_eq!(listener_fd_reserve(1024), 128);
+    assert_eq!(listener_fd_reserve(248), 32);
+}
+
 /// `feature_port.py`: another process cannot bind the P2P listen port.
 #[tokio::test]
 async fn reuseaddr_bind_cannot_take_a_listen_port() {

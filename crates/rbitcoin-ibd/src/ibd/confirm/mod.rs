@@ -568,9 +568,7 @@ impl ConfirmFeed {
                 .and_then(|saved| saved.bytes_left)
             {
                 let cap = allowance.saturating_sub(pending);
-                if next > cap {
-                    next = cap;
-                }
+                next = next.min(cap);
             }
             g.lead_bytes_left = Some(next);
         }

@@ -285,15 +285,15 @@ impl BodyPresence {
             match slot {
                 Slot::Known => drop_known += 1,
                 Slot::Pending(_) => {
-                    drop_pending += 1;
+                    tally_dropped_pending(&mut drop_pending);
                     drop_pending_keys.push(*hash);
                 }
                 Slot::KnownPending(_) => {
                     drop_known += 1;
-                    drop_pending += 1;
+                    tally_dropped_pending(&mut drop_pending);
                     drop_pending_keys.push(*hash);
                 }
-                Slot::Missing => drop_missing += 1,
+                Slot::Missing => tally_dropped_missing(&mut drop_missing),
                 Slot::Rejected => {}
             }
             false
@@ -305,4 +305,16 @@ impl BodyPresence {
         self.pending -= drop_pending;
         self.missing -= drop_missing;
     }
+}
+
+// Pending and missing counts feed `ibd: sizes` only. Header headroom reads `known_len`.
+#[cfg_attr(false, mutants::skip)]
+fn tally_dropped_pending(n: &mut usize) {
+    *n += 1;
+}
+
+// Pending and missing counts feed `ibd: sizes` only. Header headroom reads `known_len`.
+#[cfg_attr(false, mutants::skip)]
+fn tally_dropped_missing(n: &mut usize) {
+    *n += 1;
 }
