@@ -23,7 +23,8 @@ pub fn netgroup(addr: SocketAddr, asmap: Option<&AsMap>) -> u64 {
     let (lookup, prefix) = prefix_group(addr.ip());
     let asn = lookup.zip(asmap).map_or(0, |(ip, m)| m.mapped_as(ip));
     if asn != 0 {
-        // An ASN fits in 32 bits and `ASN` sits at bit 33.
+        // An ASN fits in 32 bits and `ASN` sits at bit 33, so `|` and `^`
+        // are the same key. `wrapping_add` drops that `|`.
         ASN.wrapping_add(u64::from(asn))
     } else {
         prefix
@@ -50,7 +51,8 @@ fn prefix_group(ip: IpAddr) -> (Option<IpAddr>, u64) {
         IpAddr::V6(v6) => v6,
     };
     if crate::netaddr::is_cjdns_ip(v6) {
-        // The overlay bit, the network id, and the nibble do not overlap.
+        // The overlay bit, the network id, and the nibble do not overlap,
+        // so `|` and `^` are the same key. `wrapping_add` drops that `|`.
         let nibble = u64::from(v6.octets()[1] >> 4);
         return (
             None,
@@ -67,7 +69,7 @@ fn prefix_group(ip: IpAddr) -> (Option<IpAddr>, u64) {
 
 fn ipv4_group(v4: Ipv4Addr) -> u64 {
     let o = v4.octets();
-    // The high byte sits above the low byte.
+    // The high byte sits above the low byte, so `|` and `^` are the same key.
     (u64::from(o[0]) << 8).wrapping_add(u64::from(o[1]))
 }
 
@@ -129,7 +131,8 @@ pub fn netgroup_net(addr: NetAddr, asmap: Option<&AsMap>) -> u64 {
         NetAddr::Ip(sock) => netgroup(sock, asmap),
         NetAddr::Cjdns { ip, port } => netgroup(SocketAddr::from((ip, port)), asmap),
         // BIP155 network ids: 4 is TorV3, 5 is I2P. The overlay bit, the
-        // network id, and the nibble do not overlap.
+        // network id, and the nibble do not overlap, so `|` and `^` are the
+        // same key. `wrapping_add` drops that `|`.
         NetAddr::Onion { pk, .. } => OVERLAY
             .wrapping_add(u64::from(4u8) << 8)
             .wrapping_add(u64::from(pk[0] >> 4)),

@@ -1222,6 +1222,20 @@ pub async fn spawn_peer(
     // Drop / stall disconnect) must abort both children — plain JoinHandle drop
     // only detaches.
     let task = tokio::spawn(async move {
+        /// Aborts both halves if the parent task is cancelled mid-flight.
+        struct PeerIoTasks {
+            reader: tokio::task::JoinHandle<()>,
+            writer: tokio::task::JoinHandle<()>,
+        }
+        /// Parent cancel must abort both halves. A dropped handle only detaches.
+        #[cfg_attr(false, mutants::skip)]
+        impl Drop for PeerIoTasks {
+            fn drop(&mut self) {
+                self.reader.abort();
+                self.writer.abort();
+            }
+        }
+
         // Reader first: Core pipelines sendheaders/sendcmpct/… right after verack.
         // July 18 cold-start worked with **no** post-handshake getaddr/sendaddrv2
         // before getheaders; those writes raced Core's pipeline and peers closed

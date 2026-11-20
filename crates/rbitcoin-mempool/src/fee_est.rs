@@ -46,6 +46,7 @@ pub const fn flow_bucket_edges() -> [u64; FLOW_BUCKET_EDGE_COUNT] {
         let mut term = SCALE;
         let mut acc = term;
         let mut n = 1u128;
+        // `n < 40` and `n <= 40` round to the same edge. `!=` drops that `<`.
         while n != 40 {
             term = term * y / (n * SCALE);
             acc += term;

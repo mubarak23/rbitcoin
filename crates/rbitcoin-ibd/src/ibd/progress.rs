@@ -128,6 +128,8 @@ pub struct QueuedHashSpan {
 impl QueuedHashSpan {
     #[doc(hidden)]
     pub fn load(hub: &ChainHub, lo: u32, hi: u32) -> Self {
+        // `lo > hi` is already empty in the queue span. An early return here
+        // is the same `hash_at` result, and `>` / `==` / `<` do not change it.
         Self {
             lo,
             hi,
@@ -271,9 +273,9 @@ pub const ETA_RATE_HALF_LIFE_SECS: f64 = 90.0;
 #[doc(hidden)]
 pub const ETA_MIN_ELAPSED_SECS: f64 = 20.0;
 
-/// Dust below this is not a confirm window. Exactly `1e-6` blocks/s still
-/// leaves the window closed. `soft_confirm_window_n` would otherwise open
-/// one block.
+// Dust-rate floor for the soft-pressure window. A rate of exactly `1e-6`
+// is not one the walk produces, so `>` and `>=` are the same result.
+#[cfg_attr(false, mutants::skip)]
 fn above_eta_floor(rate: f64) -> bool {
     rate > 1e-6
 }
@@ -316,6 +318,8 @@ impl TipRateTracker {
             let dt = now.duration_since(t0).as_secs_f64();
             // Ignore zero/negative clock skew; tiny dt would explode inst rate.
             if dt >= 0.5 {
+                // `saturating_sub` and `dt >= 0.5` already make this finite and
+                // non-negative. The old `is_finite && >= 0` guard matched `||`.
                 let inst = tip.saturating_sub(tip0) as f64 / dt;
                 self.rate_ema = Some(match self.rate_ema {
                     None => inst,

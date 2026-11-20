@@ -40,6 +40,7 @@ fn blocks_in_window(n_blocks: u32) -> NonZeroUsize {
 /// Lowest hurdle in `hurdles[start..start + n]`. `n` is at least one.
 fn lowest_hurdle(hurdles: &VecDeque<u64>, start: usize, n: NonZeroUsize) -> u64 {
     let mut low = hurdles[start];
+    // `start + 1` and `start * 1` share a minimum with `hurdles[start]`.
     for h in hurdles.range(start..start + n.get()).skip(1).copied() {
         low = low.min(h);
     }
