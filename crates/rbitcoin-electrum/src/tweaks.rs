@@ -526,7 +526,7 @@ pub fn subscribe(
     let map = height_map(query, chain, req.start, !req.historical, min_dust)?;
     rbitcoin_log::trace!(
         Electrum,
-        "electrum: tweaks h={} count={} result_keys={} wall_ms={}",
+        "tweaks h={} count={} result_keys={} wall_ms={}",
         req.start,
         req.count,
         map.as_object().map(|o| o.len()).unwrap_or(0),

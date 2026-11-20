@@ -66,7 +66,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for PrefixedRead<R> {
 /// A v2 handshake that never finished. The functional debug-log map emits
 /// Core's sentence; this line is what an operator reads.
 pub fn v2_handshake_timeout_log(peer: u64) -> String {
-    format!("p2p: v2 handshake timed out, disconnecting peer={peer}")
+    format!("v2 handshake timed out, disconnecting peer={peer}")
 }
 
 pub fn v2_missing_garbage_terminator_log() -> &'static str {
@@ -554,7 +554,7 @@ pub fn command_to_12(cmd: &str) -> [u8; 12] {
 /// An unknown v2 message type. The functional debug-log map emits Core's
 /// sentence; this line is what an operator reads.
 pub fn v2_invalid_message_type_log() -> &'static str {
-    "p2p: v2 peer sent a message type we do not know"
+    "v2 peer sent a message type we do not know"
 }
 
 #[doc(hidden)]

@@ -109,7 +109,7 @@ impl<R: AsyncRead + Unpin + Send> V1Reader<R> {
             if checksum(&payload) != self.head[20..24] {
                 rbitcoin_log::debug!(
                     P2p,
-                    "p2p: v1 checksum error, {} byte message dropped",
+                    "v1 checksum error, {} byte message dropped",
                     payload.len()
                 );
                 on_drop(payload.len())?;

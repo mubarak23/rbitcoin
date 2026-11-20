@@ -1228,9 +1228,9 @@ fn core_log_helpers_match_step21_needles() {
     );
     assert_eq!(
         received_getdata_wtx_log("aabbccdd", 3),
-        "p2p: getdata wtx aabbccdd peer=3"
+        "getdata wtx aabbccdd peer=3"
     );
-    assert_eq!(received_tx_log(), "p2p: received tx");
+    assert_eq!(received_tx_log(), "received tx");
     // Test formula: now=1_000_000, genesis=0 → variable = ceil(1e6/6e5)=2.
     assert_eq!(
         headers_download_timeout_secs(1_000_000, 0),

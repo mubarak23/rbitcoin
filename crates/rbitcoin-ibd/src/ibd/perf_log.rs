@@ -1337,7 +1337,7 @@ pub fn perf_sample_json(s: &IbdPerfSample) -> String {
 // Slow-phase warn is a log line. Stuck and rewind do not read it.
 #[cfg_attr(false, mutants::skip)]
 pub fn log_sample(s: &IbdPerfSample) {
-    debug!(Ibd, "ibd: perf {}", perf_sample_json(s));
+    debug!(Ibd, "perf {}", perf_sample_json(s));
     if s.phase_blks > 0 {
         let c_ms = s.write.class_c_ms / s.phase_blks.max(1);
         let sh_ms = s.write.sh_ms / s.phase_blks.max(1);

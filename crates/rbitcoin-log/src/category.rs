@@ -11,7 +11,7 @@
 use crate::Level;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// One subsystem. The name is the message prefix its lines already carry.
+/// One subsystem. [`crate::log_cat`] writes its name as the line prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Category {

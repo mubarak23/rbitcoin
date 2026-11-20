@@ -594,7 +594,7 @@ pub fn spawn_inbound_accept(
                             Err(e) => {
                                 rbitcoin_log::debug!(
                                     P2p,
-                                    "p2p: inbound handshake {peer_addr} failed: {e}"
+                                    "inbound handshake {peer_addr} failed: {e}"
                                 );
                                 return;
                             }

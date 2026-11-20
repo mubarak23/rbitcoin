@@ -2645,7 +2645,7 @@ pub fn log_connected_to_self(addr: impl std::fmt::Display) {
 }
 
 pub fn version_handshake_timeout_log(peer: u64) -> String {
-    format!("p2p: version handshake timeout, disconnecting peer={peer}")
+    format!("version handshake timeout, disconnecting peer={peer}")
 }
 
 /// Max addresses in one ADDR / addrv2. Interop size — do not change without
@@ -2825,7 +2825,7 @@ pub fn ping_prior_to_verack_log(peer: u64) -> String {
 
 pub fn unsupported_before_verack_log(cmd: &str, peer: u64) -> String {
     let cmd = peer_log_text(cmd);
-    format!("p2p: Unsupported message \"{cmd}\" prior to verack from peer={peer}")
+    format!("Unsupported message \"{cmd}\" prior to verack from peer={peer}")
 }
 
 /// One log line: peer-controlled bytes cannot insert a raw newline.
@@ -2840,11 +2840,11 @@ pub fn peer_log_text(s: &str) -> String {
 pub const MIN_PEER_PROTO_VERSION: i32 = 31800;
 
 pub fn obsolete_version_log(version: i32, peer: u64) -> String {
-    format!("p2p: using obsolete version {version}, disconnecting peer={peer}")
+    format!("using obsolete version {version}, disconnecting peer={peer}")
 }
 
 pub fn advertising_address_log(addr_port: impl std::fmt::Display, peer: u64) -> String {
-    format!("p2p: Advertising address {addr_port} to peer={peer}")
+    format!("Advertising address {addr_port} to peer={peer}")
 }
 
 #[doc(hidden)]
@@ -2905,7 +2905,7 @@ pub fn hidden_addr_from() -> Address {
 
 pub fn non_version_before_handshake_log(cmd: &str, peer: u64) -> String {
     let cmd = peer_log_text(cmd);
-    format!("p2p: non-version message before version handshake. Message \"{cmd}\" from peer={peer}")
+    format!("non-version message before version handshake. Message \"{cmd}\" from peer={peer}")
 }
 
 /// Tip age in blocks: `(now - tip_time) / pow_target_spacing`.
@@ -4843,7 +4843,7 @@ pub async fn peer_session_with(
         let _ = writer_task.await;
     }
     match &result {
-        Ok(()) => rbitcoin_log::debug!(P2p, "p2p: session {peer_s} closed"),
+        Ok(()) => rbitcoin_log::debug!(P2p, "session {peer_s} closed"),
         Err(e) => rbitcoin_log::warn!("p2p: session {peer_s} ended: {e}"),
     }
     result
@@ -8503,7 +8503,7 @@ pub fn on_cmpctblock_reject_early(
     if follow.cmpct_version != 2 {
         rbitcoin_log::debug!(
             P2p,
-            "p2p: cmpctblock from a peer that never sent sendcmpct version 2"
+            "cmpctblock from a peer that never sent sendcmpct version 2"
         );
         return Ok(true);
     }
@@ -9147,7 +9147,7 @@ pub async fn on_tx(
                             }
                         }
                         TxAcceptLog::Park(_missing) => {
-                            rbitcoin_log::debug!(Txrelay, "txrelay: park {txid} missingorspent");
+                            rbitcoin_log::debug!(Txrelay, "park {txid} missingorspent");
                             fetch_parked_parents(mp, tx, &wtxid, session, &extra_from);
                         }
                         TxAcceptLog::ParentFetch(_missing) => {
@@ -9520,7 +9520,7 @@ fn hb_relay_cmpct(
     ) {
         rbitcoin_log::debug!(
             P2p,
-            "p2p: no compact relay of mutated block {}: {}",
+            "no compact relay of mutated block {}: {}",
             block.block_hash(),
             rbitcoin_consensus::block_reject_reason(&e)
         );

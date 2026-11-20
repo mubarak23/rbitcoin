@@ -277,11 +277,11 @@ impl ElectrumHandle {
 #[doc(hidden)]
 pub fn log_disconnect(peer: SocketAddr, how: &std::io::Result<()>) {
     match how {
-        Ok(()) => rbitcoin_log::debug!(Electrum, "electrum: disconnect {peer}"),
+        Ok(()) => rbitcoin_log::debug!(Electrum, "disconnect {peer}"),
         Err(e) if rbitcoin_net::is_join_error(e) => {
             rbitcoin_log::warn!("electrum: disconnect {peer} (dispatch join: {e})")
         }
-        Err(e) => rbitcoin_log::debug!(Electrum, "electrum: disconnect {peer} ({e})"),
+        Err(e) => rbitcoin_log::debug!(Electrum, "disconnect {peer} ({e})"),
     }
 }
 
@@ -377,7 +377,7 @@ pub async fn run_electrum(
                         drop(stream);
                         continue;
                     };
-                    rbitcoin_log::debug!(Electrum, "electrum: connect {peer}");
+                    rbitcoin_log::debug!(Electrum, "connect {peer}");
                     // Replies, batch slots included, are small writes the
                     // client waits on whole; Nagle would hold them for an ACK.
                     if let Err(e) = stream.set_nodelay(true) {

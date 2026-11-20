@@ -55,7 +55,7 @@ fn short_ids_cover_live_ibd_tip_commands() {
     assert!(short_id_for_command("verack").is_none());
     assert_eq!(
         v2_invalid_message_type_log(),
-        "p2p: v2 peer sent a message type we do not know"
+        "v2 peer sent a message type we do not know"
     );
     assert_eq!(MAX_V2_CONTENTS_LEN, 4_000_013);
     assert_eq!(
@@ -69,7 +69,7 @@ fn short_ids_cover_live_ibd_tip_commands() {
     assert!(short_id_for_command("sendaddrv2").is_none());
     assert_eq!(
         v2_handshake_timeout_log(0),
-        "p2p: v2 handshake timed out, disconnecting peer=0"
+        "v2 handshake timed out, disconnecting peer=0"
     );
     assert_eq!(
         v2_missing_garbage_terminator_log(),

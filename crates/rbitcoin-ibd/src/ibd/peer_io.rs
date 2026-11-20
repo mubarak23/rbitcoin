@@ -863,7 +863,7 @@ impl IbdReadCtx {
             None => {
                 rbitcoin_log::debug!(
                     Ibd,
-                    "ibd: peer[{}] block frame without usable header hash",
+                    "peer[{}] block frame without usable header hash",
                     self.id
                 );
                 // No header to hash, but the frame still costs the window.
@@ -924,8 +924,7 @@ impl IbdReadCtx {
 
     #[doc(hidden)]
     pub fn on_invalid_v2(&mut self, contents_len: usize) -> bool {
-        if !self.logged_invalid_v2 {
-            self.logged_invalid_v2 = true;
+        if first_invalid_v2(&mut self.logged_invalid_v2) {
             rbitcoin_log::debug!(P2p, "{}", rbitcoin_net::v2::v2_invalid_message_type_log());
         }
         self.score_overflow(contents_len)

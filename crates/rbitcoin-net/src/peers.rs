@@ -212,7 +212,7 @@ impl PeerConnType {
 }
 
 pub fn trying_connection_log(typ: PeerConnType, addr: impl std::fmt::Display) -> String {
-    format!("p2p: trying connection ({}) to {addr}", typ.as_str())
+    format!("trying connection ({}) to {addr}", typ.as_str())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3592,7 +3592,7 @@ impl PeerHub {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, Arc::clone(&peer));
-        rbitcoin_log::debug!(P2p, "p2p: Added connection peer={id}");
+        rbitcoin_log::debug!(P2p, "Added connection peer={id}");
         peer
     }
 

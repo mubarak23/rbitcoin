@@ -50,11 +50,11 @@ fn trying_connection_log_is_p2p_not_v1() {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(25, 0, 0, 1)), 8333);
     assert_eq!(
         trying_connection_log(PeerConnType::OutboundFullRelay, addr),
-        "p2p: trying connection (outbound-full-relay) to 25.0.0.1:8333"
+        "trying connection (outbound-full-relay) to 25.0.0.1:8333"
     );
     assert_eq!(
         trying_connection_log(PeerConnType::AddrFetch, addr),
-        "p2p: trying connection (addr-fetch) to 25.0.0.1:8333"
+        "trying connection (addr-fetch) to 25.0.0.1:8333"
     );
 }
 

@@ -775,7 +775,7 @@ impl Query {
         if total_us >= 10_000 {
             rbitcoin_log::trace!(
                 Query,
-                "sh_join: creates={} outs={} need={} pages_us={} class_a_us={} spends_us={}",
+                "sh_join creates={} outs={} need={} pages_us={} class_a_us={} spends_us={}",
                 fks.len(),
                 out.len(),
                 need,

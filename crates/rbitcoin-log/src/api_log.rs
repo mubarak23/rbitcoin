@@ -76,11 +76,11 @@ pub fn api_call(
     match err {
         None => trace!(
             Api,
-            "api: {surface} peer={peer} {method} {params} wall_ms={wall_ms} ok"
+            "{surface} peer={peer} {method} {params} wall_ms={wall_ms} ok"
         ),
         Some(e) => trace!(
             Api,
-            "api: {surface} peer={peer} {method} {params} wall_ms={wall_ms} err={e}"
+            "{surface} peer={peer} {method} {params} wall_ms={wall_ms} err={e}"
         ),
     }
 

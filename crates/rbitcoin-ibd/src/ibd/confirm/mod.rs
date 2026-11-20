@@ -2372,7 +2372,7 @@ pub fn spawn_confirm_engine(
                 let heights_hashes = batch.heights_hashes();
                 if write_batch_is_stale_plan(&hub_wb, &feed_wb, first_h) {
                     debug!(Ibd,
-                        "ibd: confirm write drop stale batch first={first_h} (tip moved)"
+                        "confirm write drop stale batch first={first_h} (tip moved)"
                     );
                     feed_wb.finish(heights_hashes.iter().map(|(h, _)| *h));
                     continue;
@@ -2410,7 +2410,7 @@ pub fn spawn_confirm_engine(
                             let hash = BlockHash::from_byte_array(*raw);
                             if let Err(e) = hub_wb.query.block_queue_dequeue_height(*height) {
                                 rbitcoin_log::debug!(Ibd,
-                                    "ibd: block_queue dequeue h={height}: {e}"
+                                    "block_queue dequeue h={height}: {e}"
                                 );
                             }
                             loop_stats_wb
@@ -2472,7 +2472,7 @@ pub fn spawn_confirm_engine(
                                                 hub_wb.query.block_queue_dequeue_height(*h)
                                             {
                                                 rbitcoin_log::debug!(Ibd,
-                                                    "ibd: block_queue dequeue h={h}: {e}"
+                                                    "block_queue dequeue h={h}: {e}"
                                                 );
                                             }
                                             loop_stats_wb
@@ -2528,7 +2528,7 @@ pub fn spawn_confirm_engine(
                             write_batch_is_stale_plan(&hub_wb, &feed_wb, height),
                         ) {
                             debug!(Ibd,
-                                "ibd: confirm write drop stale batch first={height} ({msg})"
+                                "confirm write drop stale batch first={height} ({msg})"
                             );
                             feed_wb.finish(heights_hashes.iter().map(|(h, _)| *h));
                             continue;
@@ -2540,7 +2540,7 @@ pub fn spawn_confirm_engine(
                         if write_already_committed(skip_stale, hub_wb.has_block(&hash), spent_connected)
                         {
                             debug!(Ibd,
-                                "ibd: confirm write skip already-committed @{height} ({msg})"
+                                "confirm write skip already-committed @{height} ({msg})"
                             );
                             for (index, (ht, raw)) in heights_hashes.iter().enumerate() {
                                 let h = BlockHash::from_byte_array(*raw);
@@ -2768,7 +2768,7 @@ pub fn spawn_confirm_engine(
                 let wave_gen = lb.gen;
                 if claim_epoch != feed_load.epoch() {
                     debug!(Ibd,
-                        "ibd: confirm load drop stale plan epoch={claim_epoch} live={}",
+                        "confirm load drop stale plan epoch={claim_epoch} live={}",
                         feed_load.epoch()
                     );
                     reoffer_blocks_to_body_queue(
@@ -3353,7 +3353,7 @@ pub fn spawn_confirm_engine(
                                         break;
                                     }
                                     LookupFaultAction::Ignore => {
-                                        debug!(Ibd, "ibd: bq resolve wave: {e}");
+                                        debug!(Ibd, "bq resolve wave: {e}");
                                     }
                                     LookupFaultAction::Warn => {
                                         LOOKUP_WAVE_FAULTS.fetch_add(1, Ordering::Relaxed);

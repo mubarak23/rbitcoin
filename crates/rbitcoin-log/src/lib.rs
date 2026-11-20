@@ -14,8 +14,9 @@
 //!
 //! [`progress`] keeps live done/total for long stages, readable at any level.
 //!
-//! DEBUG and TRACE lines carry a [`Category`]; see [`category`] for how the
-//! category set and the level combine.
+//! DEBUG and TRACE lines carry a [`Category`], written as the line's
+//! `name: ` prefix; see [`category`] for how the category set and the level
+//! combine.
 
 #![forbid(unsafe_code)]
 
@@ -376,12 +377,13 @@ pub fn log_at_style(level: Level, style: Style, args: fmt::Arguments<'_>) {
     }
 }
 
-/// Write one line in `cat` if [`log_enabled`] says so. The `debug!` and
-/// `trace!` macros call this.
+/// Write `{cat}: {message}` if [`log_enabled`] says so. The `debug!` and
+/// `trace!` macros call this, so a call site does not repeat its category.
 pub fn log_cat(level: Level, cat: Category, args: fmt::Arguments<'_>) {
-    capture(level, &args);
+    let name = cat.as_str();
+    capture(level, &format_args!("{name}: {args}"));
     if log_enabled(level, cat) {
-        write_line(level, Style::Plain, args);
+        write_line(level, Style::Plain, format_args!("{name}: {args}"));
     }
 }
 
@@ -438,8 +440,8 @@ macro_rules! info_bold {
     };
 }
 
-/// `debug!(Mempool, "mempool: …")`. The first argument names a
-/// [`Category`] variant.
+/// `debug!(Mempool, "removed …")` writes `mempool: removed …`. The first
+/// argument names a [`Category`] variant; its name becomes the prefix.
 #[macro_export]
 macro_rules! debug {
     ($cat:ident, $($arg:tt)*) => {
@@ -451,7 +453,8 @@ macro_rules! debug {
     };
 }
 
-/// `trace!(Api, "api: …")`. Needs the category on and the level at TRACE.
+/// `trace!(Api, "rpc …")` writes `api: rpc …`. Needs the category on and
+/// the level at TRACE.
 #[macro_export]
 macro_rules! trace {
     ($cat:ident, $($arg:tt)*) => {

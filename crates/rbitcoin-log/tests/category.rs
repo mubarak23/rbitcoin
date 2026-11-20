@@ -141,15 +141,33 @@ fn categorized_macros_write_only_when_enabled() {
     reset_debug_log();
     std::env::set_var("RBITCOIN_DEBUG_LOG", &path);
     init(Level::Info);
-    debug!(Tor, "tor marker hidden");
+    debug!(Tor, "marker hidden");
     update_categories(&[Category::Tor], &[]);
-    debug!(Tor, "tor marker shown {}", 7);
-    trace!(Tor, "tor trace hidden");
+    debug!(Tor, "marker shown {}", 7);
+    trace!(Tor, "trace hidden");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     reset_debug_log();
     std::env::remove_var("RBITCOIN_DEBUG_LOG");
     let _ = std::fs::remove_file(&path);
     init(Level::Info);
-    assert!(text.contains("DEBUG tor marker shown 7"), "{text:?}");
+    // The category is the prefix; the call site does not repeat it.
+    assert!(text.contains("DEBUG tor: marker shown 7"), "{text:?}");
     assert!(!text.contains("hidden"), "{text:?}");
+}
+
+#[test]
+fn captured_categorized_line_carries_the_category_prefix() {
+    let _g = lock_categories();
+    init(Level::Info);
+    capture_logs(true);
+    debug!(Mempool, "removed {} confirmed tx(s)", 3);
+    let logs = take_logs();
+    capture_logs(false);
+    assert_eq!(
+        logs,
+        [(
+            Level::Debug,
+            "mempool: removed 3 confirmed tx(s)".to_string()
+        )]
+    );
 }

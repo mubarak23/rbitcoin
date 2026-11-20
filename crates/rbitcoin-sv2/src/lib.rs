@@ -154,11 +154,11 @@ impl Sv2TpHandle {
 #[doc(hidden)]
 pub fn log_disconnect(peer: SocketAddr, how: &io::Result<()>) {
     match how {
-        Ok(()) => rbitcoin_log::debug!(Sv2, "sv2: disconnect {peer}"),
+        Ok(()) => rbitcoin_log::debug!(Sv2, "disconnect {peer}"),
         Err(e) if rbitcoin_net::is_join_error(e) => {
             rbitcoin_log::warn!("sv2: disconnect {peer} (task join: {e})")
         }
-        Err(e) => rbitcoin_log::debug!(Sv2, "sv2: disconnect {peer} ({e})"),
+        Err(e) => rbitcoin_log::debug!(Sv2, "disconnect {peer} ({e})"),
     }
 }
 
@@ -257,7 +257,7 @@ pub async fn run_sv2_tp(config: Sv2TpConfig) -> io::Result<Sv2TpHandle> {
                     continue;
                 }
             };
-            rbitcoin_log::debug!(Sv2, "sv2: connect {peer}");
+            rbitcoin_log::debug!(Sv2, "connect {peer}");
             let chain = Arc::clone(&chain);
             let stats = Arc::clone(&stats_c);
             let flight = Arc::clone(&flight);

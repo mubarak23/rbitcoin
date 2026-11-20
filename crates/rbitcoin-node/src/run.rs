@@ -1705,7 +1705,7 @@ pub async fn run_p2p(config: NodeConfig) -> Result<(), NodeError> {
                         sv2_build_avg_us: sv2_build_us.checked_div(sv2_builds).unwrap_or(0),
                         sv2_build_max_us,
                     });
-                    debug!(Tip, "tip: perf {line}");
+                    debug!(Tip, "perf {line}");
                 }
             }
 
@@ -1724,7 +1724,7 @@ pub async fn run_p2p(config: NodeConfig) -> Result<(), NodeError> {
                 let h = ev.height;
                 if h != last_tip {
                     debug!(Node,
-                        "node: tip={h} (+{delta} since start, elapsed {elapsed}s, follow_live={follow_live})"
+                        "tip={h} (+{delta} since start, elapsed {elapsed}s, follow_live={follow_live})"
                     );
                     window_blocks = window_blocks.saturating_add(h.saturating_sub(last_tip) as u64);
                     last_tip = h;
@@ -1737,7 +1737,7 @@ pub async fn run_p2p(config: NodeConfig) -> Result<(), NodeError> {
 
             if tip != last_tip {
                 debug!(Node,
-                    "node: tip={tip} (+{delta} since start, elapsed {elapsed}s, follow_live={follow_live})"
+                    "tip={tip} (+{delta} since start, elapsed {elapsed}s, follow_live={follow_live})"
                 );
                 window_blocks = window_blocks.saturating_add(tip.saturating_sub(last_tip) as u64);
                 last_tip = tip;

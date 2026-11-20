@@ -838,7 +838,7 @@ pub fn disconnect_stalled_block_peers_at(
         if !handoff {
             slots[at].getdata_wire.restart_window(now_ms);
             debug!(Ibd,
-                "ibd: keeping stalling manual peer={id} ({addr} {why}, {stall:?}, {n_work} in-flight, stream={stream}): no other peer can take its blocks"
+                "keeping stalling manual peer={id} ({addr} {why}, {stall:?}, {n_work} in-flight, stream={stream}): no other peer can take its blocks"
             );
             return Vec::new();
         }
