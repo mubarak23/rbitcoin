@@ -199,6 +199,7 @@ xattr -d com.apple.quarantine rbitcoin-node rbitcoin-cli
 **Windows store files** are opened `FILE_FLAG_OVERLAPPED` (IOCP). Header
 create/open/grow use positional `ReadFile`/`WriteFile` +
 `SetFileInformationByHandle`, not std `Read`/`Write`/`Seek`. Mixed
+`./datadir\store\...` in logs is display only — not a path bug.
 Default `--datadir` is cwd-relative `datadir` via `Path::new(".").join("datadir")`
 (`./datadir` on Unix, `.\datadir` on Windows).
 

@@ -395,7 +395,8 @@ share a 256-connection cap; the deadlines are in [`docs/rpc.md`](../../docs/rpc.
 `--rpc-socket PATH` binds that socket at PATH instead, mode **0660**, so a
 client in rbitcoin's group can connect without traversing the `0700` datadir.
 `--rpc-listen` adds TCP on `127.0.0.1:<network port>` when ADDR is omitted
-(mainnet 8332, testnet 18332, signet 38332, regtest 18443). TCP auth is
+(mainnet 8332, testnet 18332, testnet4 48332, testnet5 18352, signet 38332,
+regtest 18443). TCP auth is
 `Authorization: Bearer` from `{datadir}/rpc.token` (0600). Group or world
 bits refuse startup. Delete that file and start again so the node mints a
 new token. chmod 0600 keeps the same secret. Plus optional Core

@@ -391,7 +391,7 @@ Core functional tests still grep `UpdateTip: …` via the debug.log map
 | Line | Level | Use |
 |------|-------|-----|
 | `tip: perf` | DEBUG | One JSON object every ~5s: follow peers, blocks this window, mempool accept/reject + wall µs, inv/getdata/announce, Esplora/Electrum req counts + avg/max µs, historical block serve (`serve_n`, `serve_bytes`, `serve_tx`, `serve_avg_us`, `serve_max_us`), and SV2 (`sv2_checks`, `sv2_builds`, `sv2_build_avg_us`, `sv2_build_max_us`; zeros without `--sv2-tp-listen`) |
-| `tip: accept` | DEBUG | Per accepted tip block: wall/load/script/class_a/class_c/SH plus lookup/struct/drain/mp_strip/other (not emitted on reject) |
+| `tip: accept` | DEBUG | One JSON object per accepted tip block: `_ns` timings for wall/load/script/class_a/class_c/spend/strong/tip/lookup/structural/drain/mp_strip/pres/bf, `bf_lag`, `sh_lag`, and an `sh` object (not emitted on reject) |
 | `tip: best=` | INFO | New best hash/height after connect |
 | `cmpct reconstruct` | INFO | Per compact reconstruct: fill sources (`prefill`/`mempool`/`extra`/`orphan`) and `fetched=` `blocktxn` count/bytes. `fetched=0/0` means no getblocktxn round-trip. Getdata fallback: `getdata missing=` |
 | `node: tip=…` | DEBUG | Same height change plus `follow_live` (use `tip: best=` at info) |
