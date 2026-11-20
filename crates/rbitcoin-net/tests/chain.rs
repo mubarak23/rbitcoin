@@ -2821,6 +2821,20 @@ fn tip_accept_line_is_timestamped_json() {
 }
 
 #[test]
+fn tip_accept_drain_ns_is_the_inline_head_insert() {
+    let (dir, hub) = tmp_hub();
+    tip_accept_stats_reset(&hub.query);
+    rbitcoin_query::note_confirm(&hub.query.confirm_stats().write_head_sub_ns, 42_000);
+    rbitcoin_query::note_confirm(&hub.query.confirm_stats().write_drain_join_ns, 99_000);
+    let line = log_tip_accept_sh(&hub.query, 1, 1, 1, 0, 0);
+    assert!(
+        line.contains("\"drain_ns\":42000"),
+        "drain_ns is the inline insert, not the retired join: {line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ensure_genesis_accept_extend_and_already_have() {
     let (dir, hub) = tmp_hub();
     assert!(hub.tip_height().is_none());
