@@ -46,4 +46,6 @@ steps.
 | M8-fee | — | Fee and sigop checks at orphan park | rejected | The parent outputs are not available yet. Shape checks already run before park. |
 | M6-flag | — | Height-only `--milestone` needs a new flag | rejected | Explicit `--milestone HEIGHT` is already that switch (finding 042). |
 
-Owner: [`quality.md`](../quality.md) **Q-72**.
+Closed: every row is dispositioned. **Q-72** left
+[`quality.md`](../quality.md) in `b07432f54`; the review is credited in
+[`CHANGELOG.md`](../../CHANGELOG.md) 0.8.0.

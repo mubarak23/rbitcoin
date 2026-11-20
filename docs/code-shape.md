@@ -39,8 +39,8 @@ do not restate them here.
    test-accept is one helper. Do not copy reverse-then-hex or pin-view
    forks into each crate.
 
-7. **Names say the pick rule.** `resolve_txid_tip` versus
-   `resolve_txid_tip_then_any`. In one crate, `hub` is not both `ChainHub`
+7. **Names say the pick rule.** `TxidResolveMode::TipOnly` versus
+   `TxidResolveMode::TipThenAny`. In one crate, `hub` is not both `ChainHub`
    and `PeerHub` without a qualifier (`chain` / `peers`).
 
 8. **Do not split to beat `wc -l`.** Bitcoin script's opcode `match`,

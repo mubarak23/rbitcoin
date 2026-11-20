@@ -5,17 +5,17 @@ rbitcoin reference, or redteam static analysis). Numbered reports live beside th
 
 | ID | Severity | Topic | Status | Regression (shipped) |
 |----|----------|--------|--------|----------------------|
-| [001](./001-disconnect-on-invalid-block.md) | medium | Peer disconnect on invalid relayed block (BIP-152) | fixed | `rbitcoin-net` `peer::tests::cmpct_helpers_without_mempool_and_queue_out_closed` |
+| [001](./001-disconnect-on-invalid-block.md) | medium | Peer disconnect on invalid relayed block (BIP-152) | fixed | `rbitcoin-net` `peer::cmpct_helpers_without_mempool_and_queue_out_closed` |
 | [002](./002-store-corrupt-record-on-invalid-block.md) | low | Invalid block misclassified as store corrupt | fixed | `rbitcoin-query` `confirm_error::archive_unresolved_parent_is_missing_prevout_not_corrupt` |
-| [003](./003-bip68-version-signedness-consensus-split.md) | high | BIP68 skipped for version with bit 31 set | fixed | `block::finality_tests::bip68_enforced_when_version_high_bit_set` |
-| [004](./004-csv-nop-and-scriptnum-width.md) | high | CSV v1 no-op; CLTV/CSV 4-byte scriptnum | fixed | `script::interpreter::tests::csv_fails_when_tx_version_below_2` + Core script corpus |
+| [003](./003-bip68-version-signedness-consensus-split.md) | high | BIP68 skipped for version with bit 31 set | fixed | `rbitcoin-consensus` `block::finality_tests::bip68_enforced_when_version_high_bit_set` |
+| [004](./004-csv-nop-and-scriptnum-width.md) | high | CSV v1 no-op; CLTV/CSV 4-byte scriptnum | fixed | `rbitcoin-consensus` `script::interpreter::success_and_disabled_tests::csv_fails_when_tx_version_below_2` + Core script corpus |
 | [005](./005-non-topological-block-accepted.md) | high | Non-topological same-block spends accepted | fixed | `rbitcoin-test` `consensus_rules::header_and_spending_boundaries` |
-| [006](./006-p2sh-scriptsig-push-size.md) | medium | P2SH scriptSig pushes not limited to 520 bytes | fixed | `script::nested::tests::p2sh_scriptsig_push_over_520_rejected` |
-| [007](./007-p2sh-nested-witness-exactness.md) | medium | P2SH nested-witness scriptSig exactness / program rules | fixed | `script::nested` nested-witness malleation tests |
-| [008](./008-p2tr-keypath-sighash-zero.md) | medium | P2TR key-path 65-byte sig with sighash byte 0x00 | fixed | `script::p2tr::tests::key_path_rejects_65_byte_sighash_byte_zero` |
-| [009](./009-witness-commitment-reserved.md) | medium | Witness commitment empty/multi-item coinbase witness | fixed | `block::structure_rule_tests::s8_rejects_empty_or_multi_item_coinbase_witness_reserved` |
+| [006](./006-p2sh-scriptsig-push-size.md) | medium | P2SH scriptSig pushes not limited to 520 bytes | fixed | `rbitcoin-consensus` `script::nested::p2sh_scriptsig_push_over_520_rejected` |
+| [007](./007-p2sh-nested-witness-exactness.md) | medium | P2SH nested-witness scriptSig exactness / program rules | fixed | `rbitcoin-consensus` `script::nested` nested-witness malleation tests |
+| [008](./008-p2tr-keypath-sighash-zero.md) | medium | P2TR key-path 65-byte sig with sighash byte 0x00 | fixed | `rbitcoin-consensus` `script::p2tr::bip341_tests::key_path_rejects_65_byte_sighash_byte_zero` |
+| [009](./009-witness-commitment-reserved.md) | medium | Witness commitment empty/multi-item coinbase witness | fixed | `rbitcoin-query` `structure_rule_tests::s8_rejects_empty_or_multi_item_coinbase_witness_reserved` |
 | [010](./010-mempool-confirmed-spentness.md) | medium | Mempool no confirmed-chain spentness check | fixed | `rbitcoin-mempool` `mempool_accept_life` |
-| [011](./011-mempool-structural-chain-context.md) | medium | Mempool no structural chain-context validation | fixed | `accept::tests::reject_non_final_locktime_height`, `reject_immature_coinbase` |
+| [011](./011-mempool-structural-chain-context.md) | medium | Mempool no structural chain-context validation | fixed | `rbitcoin-mempool` `accept::reject_non_final_locktime_height`, `accept::reject_immature_coinbase` |
 | [012](./012-p2sh-redeem-not-executed.md) | high | P2SH redeem skipped when BIP16 looks off | fixed | `bip16_from_prev_mtp_exception_and_time` |
 | [013](./013-bip68-unresolved-age-fail-open.md) | high | BIP68 unresolved coin age fails open | fixed | `bip68_unresolved_coin_age_fails_closed` |
 | [014](./014-stranded-on-peer-reorg.md) | high | Stranded when peer reorgs (sync) | fixed | `peer_catchup_compact_reorg` |
@@ -25,7 +25,7 @@ rbitcoin reference, or redteam static analysis). Numbered reports live beside th
 | [018](./018-compact-block-duplicate-tx.md) | high | Compact block duplicates a tx | fixed | `repeated_short_id_is_requested_not_duplicated` |
 | [019](./019-bip30-not-enforced.md) | critical | BIP30 not enforced | fixed | cluster 015/017 + BIP34-gated batch |
 | [020](./020-pending-child-after-reorg.md) | high | Pending child not connected after reorg | fixed | `peer_catchup_compact_reorg` |
-| [021](./021-regtest-activation-heights.md) | low | Regtest BIP65/66 heights stale | fixed | `params::tests::for_network_and_helpers` |
+| [021](./021-regtest-activation-heights.md) | low | Regtest BIP65/66 heights stale | fixed | `rbitcoin-consensus` `params::for_network_and_helpers` |
 | [022](./022-stack-altstack-share-max-size.md) | high | `MAX_STACK_SIZE` ignored altstack on PushBytes / TUCK | fixed | `stack_and_altstack_share_max_size_on_pushdata` |
 | [023](./023-tapscript-initial-stack-limits.md) | high | Tapscript initial witness stack skipped 1000/520 limits | fixed | `script_path_rejects_initial_stack_over_max_size` |
 | [038](./038-tip-accept-lifetime.md) | high | Async tip-accept job must not borrow a dropped hub | fixed | `owned_job_finishes_after_waiter_abort` |
@@ -37,7 +37,7 @@ rbitcoin reference, or redteam static analysis). Numbered reports live beside th
 | [029](./029-compact-tx-count.md) | critical | Compact block tx count and one partial per peer | fixed | `reconstruct_rejects_tx_count_above_weight_ratio`, `hostile_peer_session` |
 | [032](./032-block-tx-count-alloc.md) | critical | Block tx count allocated before the payload was checked | fixed | `decode_block_precomputes_rejects_tx_count_past_payload` |
 | [031](./031-signet-solution.md) | high | Signet solution CompactSize and pushes | fixed | `compact_size_and_solution_parse_errors` |
-| [024](./024-talip-review-index.md) | — | Talip review index | index | Q-71 |
+| [024](./024-talip-review-index.md) | — | Talip review index | index | closed: Q-71 left [`quality.md`](../quality.md) in `b07432f54`; review credited in [`CHANGELOG.md`](../../CHANGELOG.md) 0.8.0 |
 | [025](./025-tapleaf-annex-prefix.md) | critical | Tapleaf `0x50` rejected | fixed | `script_path_accepts_leaf_0x50_with_annex_and_0xc2` |
 | [026](./026-false-witness-program.md) | high | False witness program accepted | fixed | `false_witness_program_is_eval_false` |
 | [027](./027-script-skip-wtxid.md) | critical | Script skip keyed by txid | fixed | `tip_script_pres_skips_only_matching_wtxid` |
@@ -56,7 +56,7 @@ rbitcoin reference, or redteam static analysis). Numbered reports live beside th
 | [044](./044-local-auth.md) | low | Tor SAFECOOKIE, datadir `0700`, socket mode, overlay permissions | fixed | `tor_control_onion_lifecycle` |
 | [043](./043-peer-send-buffer.md) | high | Unbounded per-peer outbound queue | fixed | `hostile_peer_session` |
 | [040](./040-corrupt-bounds.md) | medium | Corrupt uleb128, seqsigwit lengths, and BDZ modulus | fixed | `read_packed_zero_modulus_or_vertices_is_corrupt` |
-| [052](./052-livera-review-index.md) | — | Livera review index | index | Q-72 |
+| [052](./052-livera-review-index.md) | — | Livera review index | index | closed: Q-72 left [`quality.md`](../quality.md) in `b07432f54`; review credited in [`CHANGELOG.md`](../../CHANGELOG.md) 0.8.0 |
 | [053](./053-parent-req-cap.md) | critical | Parent-request tracker cap | fixed | `parent_req_stops_at_per_peer_cap` |
 | [054](./054-wtxid-getdata.md) | low | Wtxid follow-up is a wtxid getdata | fixed | `wtxid_followup_is_requested_as_wtx` |
 | [055](./055-decoy-rate.md) | high | Decoy packets count toward the rate window | fixed | `decoy_packet_is_handed_to_the_rate_hook` |

@@ -160,7 +160,7 @@ headers prove heavier branch
 
 # Tip-follow
 headers / pending
-    → MostWorkSelector (skip invalid-marked)
+    → ChainHub::best_held_branch (held_branch_beats → work_better; skip is_block_invalid)
     → gather bodies (held-by-hash · Class A)
     → ChainHub::accept_branch (snapshot → disconnect → connect)
 ```

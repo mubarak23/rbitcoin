@@ -61,6 +61,21 @@ for signet/mainnet sync. **Not** CLI.
 |-----|-----|
 | `RBITCOIN_TEST_DROP_STORE` | `1` or `true`: `--smoke` deletes the store before shutdown so the shutdown error path runs (`NodeEnv::test_drop_store`) |
 | `RBITCOIN_CORE_DATA` | Directory of Core JSON corpora for consensus tests |
+| `RBITCOIN_URING_INFLIGHT_PANIC_CHILD` / `RBITCOIN_URING_DRAIN_ERROR_CHILD` / `RBITCOIN_URING_DROP_ERROR_CHILD` / `RBITCOIN_URING_TLS_LEFTOVER_CHILD` / `RBITCOIN_URING_BEGIN_LEFTOVER_CHILD` / `RBITCOIN_URING_DROP_LEFTOVER_CHILD` | Re-exec markers in `rbitcoin-store/tests/uring_session.rs`: the child process runs the abort or leftover case |
+| `RBITCOIN_REFILL_NS` / `RBITCOIN_REFILL_CHILD` | Re-exec markers in `outbound_refill_journey`: the journey runs in an `unshare` netns, or as its own process |
+| `RBITCOIN_DECOY_TARGET` | Re-exec marker in `asmap_journey`: the child checks that a decoy `CARGO_TARGET_DIR` does not move the `journey-node` path |
+
+## Script and harness names (not read by the node)
+
+| Env | Read by |
+|-----|---------|
+| `RBITCOIN_NODE` | `scripts/core-functional/bitcoind` shim (also `nightly.sh` and the warnet entrypoint, which set it): path to the `rbitcoin-node` binary |
+| `RBITCOIN_NODE_REAL` | `scripts/core-functional/bitcoind.test.sh`: optional real node for the live smoke |
+| `RBITCOIN_CACHE` | `scripts/core-functional/bitcoind` shim and `run.sh`: cached 199-block `store/` copied into a Core cache-shaped datadir |
+| `RBITCOIN_LAB_HEAD_SCALE` | `scripts/core-functional/bitcoind` shim: `tiny` passes `--head-scale tiny` when `bitcoin.conf` names no `head_scale` (warnet lab image) |
+| `RBITCOIN_LOG_STDOUT` | `scripts/core-functional/bitcoind` shim: also tee node output to stdout (warnet lab image) |
+| `RBITCOIN_CORE_BITCOIND` | `fuzz/src/lib.rs` and the Core differential fuzz targets: Core `bitcoind` path; `scripts/fuzz-run.sh` sets it |
+| `RBITCOIN_CLI` | `scripts/lightning/bitcoin-cli` wrapper: path to `rbitcoin-cli` |
 
 ## Deleted / do not reintroduce
 

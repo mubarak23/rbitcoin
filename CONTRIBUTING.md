@@ -72,7 +72,7 @@ IO on Windows and Darwin.
 | `rbitcoin-node --smoke` | yes | yes | yes |
 | `./scripts/ci-os-smoke.sh` (store platform + mmap fuse + query confirm + `--smoke`) | yes | yes — this **is** the required `macos` job | **Git Bash** — this **is** the required `windows` job |
 | `cargo fmt --all` / `cargo clippy --workspace --all-targets -- -D warnings` | yes | yes | yes |
-| `cargo test --workspace` (required `test` job) | yes | yes, with `--features skip-flushes` (TESTING.md). CI runs it in the optional `macos-test` job. Needs `flock` (below) | use **WSL2** (Ubuntu + rustup inside the distro). Native CI does **not** run the full workspace suite |
+| `cargo test --workspace` (the required `test` job runs `cargo test --workspace --exclude rbitcoin-bench`) | yes | yes, with `--features skip-flushes` (TESTING.md). CI runs it in the optional `macos-test` job. Needs `flock` (below) | use **WSL2** (Ubuntu + rustup inside the distro). Native CI does **not** run the full workspace suite |
 | `./scripts/coverage.sh` / `cargo deny` / `./scripts/ast-grep.sh` | yes (install extras below, or Nix) | possible; not the CI host | not the supported path |
 | `nix develop` / `nix-shell` | optional pin (below) | optional pin (below) — `aarch64-darwin` | no |
 

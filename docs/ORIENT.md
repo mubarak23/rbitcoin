@@ -49,7 +49,7 @@ Ask before any of these, including when the change looks locally justified:
 - Replace a purpose-built IO machine with batched `pread` / `pwrite`.
 - Bump or wipe the schema, or add an `RBITCOIN_*` knob.
 - Widen who is trusted beyond [`../SECURITY.md`](../SECURITY.md).
-- Merge, force-push `master`, or `cargo clean` the shared cargo silo.
+- Merge, force-push `master`, or `cargo clean` or delete another session's `target/`.
 - Start an item in [`quality.md`](./quality.md) or [`peer-clients.md`](./peer-clients.md)
   that the user did not name.
 - Open a mainnet datadir, or treat an agent-VM run as a perf result.

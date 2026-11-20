@@ -87,13 +87,13 @@ index refuses Shared (file) scripthash.body; wipe store/scripthash* then restart
 index refuses pack8 Paged (mode 10) scripthash heads; wipe store/scripthash* then restart (Class A kept; SH rematerializes with --sh-index)
 ```  
 Table file headers **22–30** remain `schema_file_openable`. A 22 binary refuses 23 `meta`.
-**22→23 open:** occupied Class A rewrites `create.loc.ovf` 12 B rows (`fk:u64` + two u16) to 16 B (`fk:u64` + two u32) and `store/meta` to 23. Empty 22 rewrites `meta`. A 22 binary refuses 23 `meta`. Spent vin stays u16 (stripped input ≥ ~41 B ⇒ ≲24k vins in a 1 MB block; widening would bump the 8 B spent slot).
+**22→23 open:** occupied Class A rewrites `create.loc.ovf` 12 B rows (`fk:u64` + two u16) to 16 B (`fk:u64` + two u32) and `store/meta` to 30. Empty 22 rewrites `meta`. A 22 binary refuses 23 `meta`. Spent vin stays u16 (stripped input ≥ ~41 B ⇒ ≲24k vins in a 1 MB block; widening would bump the 8 B spent slot).
 **23→24 open** (schema 24/25 binaries): rewrote `header.body` 88 B rows to 96 B. This binary does not expand. An 88 B body stays 88 B and `meta` rewrites to 30.
-**24/25→26 open:** rewrite each 96 B `header.body` row to 88 B (drop trailing `size`/`weight`) via `header.body.grow` then rename; rewrite `meta` to 26. A body that is already 88 B is unchanged. A 25 binary refuses 26 `meta`. Crash with leftover `.grow` discards it and retries.
+**24/25→26 open:** rewrite each 96 B `header.body` row to 88 B (drop trailing `size`/`weight`) via `header.body.grow` then rename; rewrite `meta` to 30. A body that is already 88 B is unchanged. A 25 binary refuses 26 `meta`. Crash with leftover `.grow` discards it and retries.
 **29→30 open:** rewrite `store/meta` to 30 and sync its directory. Create `spent.delta/`, sync `store/`, write an empty `spent.delta/commit`, then create `seg.1`, `idx.0` and `log.0`. Then, when `spent.body` reaches its published end, which a schema-30 body never does before its first commit, read it once: any pre-30 Class A filled it (a 22–28 store goes through this step too). Then: each page wholly below the published end with a nonzero slot becomes a page that reads `spent.body`, with its count, and the page the end straddles becomes a record over zeroes of its nonzero slots below the end. If `spend.pages.commit` exists, each committed image, cut at the `spent.body` end, adds a record over that page of the slots where it differs from `spent.body`, an explicit zero included, except the 16 header bytes of page 0. That generation's sealed tip is the 29 commit's height or sealed tip, or above any tip when the 29 commit is held, so the open filter below runs `keep` over those pages as 29 did before a fold. All of it is one generation. Then remove `spend.pages.commit`, sync the directory, and remove the image files. `spent.body` is not written. A delta that already published a generation skips the publish and only removes the 29 files. No Class A rewrite. A 29 binary refuses 30 `meta`.
 **27→28 open:** rewrite `store/meta` to 28 and sync its directory. No table rewrite. A 27 binary refuses 28 `meta`. That binary does not read `spend.pages`, so leaving it on 27 would let it write spends under a live log. This binary continues from 28 to 30.
 **26→27 open** (schema 27 binaries): rewrote `store/meta` to 27. No table rewrite. A 26 binary refuses 27 `meta`. The sync lands before a witness stem cut, so a crash cannot leave schema 26 beside an empty witness locator. This binary continues from 27 to 30.
-**24→25 open:** rewrite `meta` to 25; create or zero-extend `txstat.body` to `create.loc` count. Do **not** rewrite `txout.body`. Unlink leftover `txfixed.body`. A 24 binary refuses 25 `meta`.
+**24→25 open:** rewrite `meta` to 30; create or zero-extend `txstat.body` to `create.loc` count. Do **not** rewrite `txout.body`. Unlink leftover `txfixed.body`. A 24 binary refuses 25 `meta`.
 **Endianness:** little-endian for all multi-byte integers.
 
 Older versions and migration notes live in [`SCHEMA_HISTORY.md`](./SCHEMA_HISTORY.md).
@@ -117,7 +117,7 @@ schema 18.
 |--------|----------------|
 | Class A | Split `txout` / `seqsigwit` / `spent`; thin LAYOUT17 meta; kinds **0–9**; 8 B spent slots; `spent.ovf` |
 | Identity | Dense `txid.body` (32 B/fk); segmented `tx.head` (25-bit + fuse8 v2) |
-| Loc | `create.loc` (2 B/create + `create.off` + ovf) and cold `seqsigwit.loc`; leftover Class A `{txout,spent,seqsigwit}.idx/` unlinked on empty 21–24. |
+| Loc | `create.loc` (2 B/create + `create.off` + ovf) and cold `seqsigwit.loc`; leftover Class A `{txout,spent,seqsigwit}.idx/` unlinked on every open. |
 | Class B | SH runs `key_len=40` unique `(sh, create_fk)`; megakey pages ULEB deltas (`ver=1`); body **dir** (sharded). Leftover file body **refused**. Slab **class** is the byte allocation (32…2048); `used` is the fk count and may exceed the old geometric `slab_cap(class)` when the ULEB stream fits. Decode `used` fks from the payload. |
 | Class C | `confirmed[]` + `header_txs_*`; no `tx_height.body`; `strong_tx` bitset |
 | Tweaks | Segmented `sp_tweaks.idx/` + `sp_tweaks.body/` (`off:u32`, body `0`/`33`) |
@@ -224,7 +224,7 @@ itself changed.
     meta                         # store magic + schema version
     store.secret                 # 32 B CSPRNG secret (scripts/witness XOR, head mix)
     tip_seal                     # soft tip seal after a complete Class C barrier. No SCHEMA_VERSION bump
-    header.body / header.head    # Class A headers + hash index (overflow: header.head.gN)
+    header.body / header.head    # Class A headers + hash index (overflow: header.head.gN; each gen has a .mlt multi-list sidecar)
     header.adopt                     # IBD checkpoint list + milestone hash (not a header-chain copy)
     block.invalid                    # blocks that failed connect, kept across restart
     txout.body / create.loc / create.off / create.loc.ovf   # Class A outs (hot loc)
@@ -540,9 +540,9 @@ One `create_loc_range_batch` yields both `(txout, spent)` and `n_out`. Lookup
 stamps both ranges; load copies the stamp; write appends loc and keeps RAM
 packs until write of the last height whose TipOnly had started at note
 (`lookup_started_hi`; just-written abs; fill of that write runs first). Write
-does not pread `create.loc`. Occupied 21 Class A
+does not pread `create.loc`. Meta below 22
 is refused. Occupied 22 rewrites `create.loc.ovf` 12 B → 16 B. Leftover
-`{txout,spent,seqsigwit}.idx` and `spent.off` are unlinked on empty 21–24 open.
+`{txout,spent,seqsigwit}.idx` and `spent.off` are unlinked on every open.
 
 `spent_abs(off, vout) = off + 8×vout`.
 

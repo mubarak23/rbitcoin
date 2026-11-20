@@ -78,9 +78,11 @@ Open revalidation runs in `Query::open_or_create` **before** P2P can extend tip.
   Main heads are sealed MPHF+pack8 (no fuse); new keys go to global ingest OA.
 - **No spend columns** — spentness is the `spent.body` annotation plus `is_confirmed_strong`.
 - Direct IBD does not enqueue SH creates. Tip write-behind runs after `flush_class_c_tip`. Tip entry bulk-materializes from Class A.
-- **Kill-safe without chain walks:** first confirm after open **sequentially scans**
-  `scripthash.body` once into a process set of `create_tx_fk`s already present;
-  re-confirm skips those txs. Hot path only appends + maintains heads in RAM.
+- **Kill-safe without chain walks:** `scripthash.include_hwm` (and SEAL) advance
+  only after the SH tables sync. Open re-queues every height above the highest
+  one whose creates are all ≤ that floor. Replay is idempotent: per scripthash,
+  append skips each `fk ≤` the last fk its head or last page already holds.
+  Hot path only appends + maintains heads in RAM.
 - Creates for unstrong / above-tip txs are **invisible** via `is_confirmed_strong`.
 - Disconnect tip: **one unlink per scripthash**. A megakey drops that block's
   creates from the tail pages. The saved page image is synced before the undo
@@ -137,9 +139,11 @@ Private, **not** Class A. RAM graph is source of truth; files may lag.
   - **Full cold** when head empty. **`RBITCOIN_SH_FORCE_REBUILD=1`:** wipe head + full two-scan collect + pack. Empty collect after Class A creates remain is fatal.
   - **Cold resume:** the pack commit is `scripthash.head/NN.packed` (sibling of the MPHF base; holes stay). Open loads a shard's MPHF only when that mark exists. `MphfHead::exists` after pass-1 BDZ is **not** pack-done. A complete unmarked head (every shard has `.mphf`+`.val`, and `scripthash.unsorted` has no `DONE.keys` / `DONE.post` / `keys/` / `post/`) is soft-migrated: the marks are written, and a missing `include_hwm` is set from the create count. An extract still on disk never gets a mark, even if `include_hwm` already names the tip. No valid `DONE.keys` (including leftover `SHUNSRT3` / 24 B `NN`, or `keys/NN` / `post/NN` as a file) deletes unsorted and restarts pass 1. A spill whose first 8 B are not `SHKSP01` is Corrupt — wipe unsorted; do not parse or migrate. `DONE.keys` / `DONE.post` record the inclusive Class A `create_fk` scanned (`SHKEYS02` last_fk marker / `SHPOST02`). Missing current `keys/NN/` spills with unsealed shards finishes BDZ from those files. Head files present and no `DONE.post` restarts pass 2 from fk 1 (partial `post/` spills are deleted and recollected). Packing a shard soft-clears ingest keys that packed main now owns, so a tip append that landed on ingest while the shard was unsealed cannot hide that chain. A `post/NN` **file**, or a spill whose first 8 B are not `SHPST01`, is Corrupt (wipe unsorted). If Class A grew after `DONE.post` and **no** shards are packed, append postings. If any shard is already pack-marked, pack remaining unsealed `post/NN/`, then Class A tail-append onto the durable head (Direct write-behind no-ops). After all shards seal, the unsorted dir is removed.
   Empty head + leftover catalog: wipe leftover runs + SEAL, then Class A collect (not k-way from `scripthash.runs`). Durable head: leftover runs are discarded, `SEAL` kept; missing `include_hwm` bootstraps from SEAL. Inclusion HWM: `scripthash.include_hwm`. **Leftover live OA** at `scripthash.head` with no packed main shard, and a readable non-`SHSR` `ovf/NNNNNN`, are removed on open. A six-digit segment this open cannot read stays, and the next seal takes the id after the highest six-digit name. The body and a packed main index stay. `--sh-index` materializes the removed head. A first `create` writes `meta` last. `open_or_create` replaces a partial directory only when none of `txid.body`, `txout.body`, `header.body`, `confirmed.body`, `spent.body`, `input.body`, or `seqsigwit.body` already hold payload, on the hot directory or on the cold directory when the store is split. A file this open cannot parse still counts when any byte past its header is non-zero, or when that file cannot be read. Zeros past the header are empty-create slack. A missing `meta` next to that payload is `Corrupt` and is not wiped. An unreadable table (`EACCES`, `ENOSPC`) is not treated as an incomplete create.
-  **SH head open:** sealed **main** shards load `.idx` only (one entry per 128
-  records; no fuse). Sealed **ovf** loads `.idx` + BF8R. Occupancy scan is not
-  used on those files. A schema-14 page-era durable index is **refused** (wipe
-  `store/scripthash*` and rematerialize). Ingest OA still uses `{ingest}.occ`.
+  **SH head open:** a **main** shard with `NN.packed` loads its BDZ `NN.mphf`
+  (`g` in RAM; tags stay on disk) and opens `NN.val` (no fuse, no `.idx`).
+  **L0** `SHSR` ovf loads `.idx` (one entry per 170-record page) + `.fuse8`
+  (BF8R). **L1** promoted ovf (newest `NNNNNN.mphf`) loads `.mphf` + `.val` +
+  `.fuse8`. Occupancy scan is not used on those files. A schema-14 page-era
+  durable index is **refused** (wipe `store/scripthash*` and rematerialize). Ingest OA still uses `{ingest}.occ`.
   A missing ingest file is empty. Open deletes a large ingest whose sidecar is
   0 and whose slots are empty, so a later start does not scan that hole.

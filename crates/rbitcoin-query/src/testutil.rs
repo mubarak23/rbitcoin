@@ -1,6 +1,6 @@
 //! Drop-cleaning Tiny [`crate::Query`] for tests. Not an operator API.
 //!
-//! TxApply → dummy [`bitcoin::Block`] conversion lives here (Q-21), not in
+//! TxApply → dummy [`bitcoin::Block`] conversion lives here, not in
 //! production [`Query`] archive.
 
 pub use rbitcoin_store::testutil::TempDir;

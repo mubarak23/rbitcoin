@@ -5,7 +5,7 @@ register onto rbitcoin production code and tests. Our own rule ids
 (S1, H1, C15, …) stay in [`consensus-tests.md`](./consensus-tests.md).
 Do not copy those rows here.
 
-Compared tree: rbitcoin `master` @ `4c0924f6a`.
+Compared tree: rbitcoin `master` @ `529249785`.
 Their register: [BTCDecoded/blvm-spec](https://github.com/BTCDecoded/blvm-spec)
 `CONSENSUS_SPEC.md` @ `6b7ae49dc077cf174a2367b4d56eeeb31dcb8de5`
 (2026-11-06). Version 1.0, status Draft. 163 numbered rules, each
