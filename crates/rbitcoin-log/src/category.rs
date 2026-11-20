@@ -121,7 +121,7 @@ pub fn update_categories(include: &[Category], exclude: &[Category]) -> Vec<(Cat
     let off = exclude.iter().fold(0, |m, c| m | c.bit());
     let next = |mask: u32| (mask | on) & !off;
     let prev = CATEGORIES
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |m| Some(next(m)))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |m| Some(next(m)))
         .unwrap_or_else(|m| m);
     map_of(next(prev))
 }
