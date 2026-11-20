@@ -400,45 +400,33 @@ pub fn group_sqe(
     }
 }
 
-/// Largest merged-read bounce buffer a thread keeps for the next wave.
-const BOUNCE_POOL_MAX_BYTES: usize = 256 * 1024;
-/// Bounce buffers one thread keeps; a wave has only a few merged groups.
-const BOUNCE_POOL_MAX_BUFS: usize = 16;
-/// Total bounce bytes one thread keeps across waves.
-const BOUNCE_POOL_MAX_TOTAL_BYTES: usize = 1024 * 1024;
+/// Merged-read bounce bytes one thread keeps between waves (RAM traded for
+/// skipping an allocation and its zeroing per wave). A wave whose merged
+/// spans need more gets a buffer of its own and the kept one stays.
+const BOUNCE_KEEP_BYTES: usize = 1024 * 1024;
 
 thread_local! {
-    /// Merged peeks read the page span into a bounce buffer, then copy each
-    /// destination out. Reusing the buffer keeps that span out of the
-    /// allocator (and its zeroing) on every wave.
-    static BOUNCE_POOL: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    /// Every merged group of a wave reads its page span into its own slice
+    /// of this buffer.
+    static BOUNCE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-fn take_bounce(span: usize) -> Vec<u8> {
-    let pooled = BOUNCE_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        pool.iter()
-            .position(|buf| buf.len() >= span)
-            .map(|i| pool.swap_remove(i))
-    });
-    pooled.unwrap_or_else(|| vec![0u8; span])
+/// At least `need` bounce bytes. Hand them back with [`keep_bounce`].
+fn take_bounce(need: usize) -> Vec<u8> {
+    if need > BOUNCE_KEEP_BYTES {
+        return vec![0u8; need];
+    }
+    let mut buf = BOUNCE.with(|kept| std::mem::take(&mut *kept.borrow_mut()));
+    if buf.len() < need {
+        buf.resize(need, 0);
+    }
+    buf
 }
 
-fn return_bounces(buffers: impl IntoIterator<Item = Vec<u8>>) {
-    BOUNCE_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        let mut total: usize = pool.iter().map(Vec::len).sum();
-        for buf in buffers {
-            if buf.len() > BOUNCE_POOL_MAX_BYTES || pool.len() >= BOUNCE_POOL_MAX_BUFS {
-                continue;
-            }
-            if total.saturating_add(buf.len()) > BOUNCE_POOL_MAX_TOTAL_BYTES {
-                continue;
-            }
-            total = total.saturating_add(buf.len());
-            pool.push(buf);
-        }
-    });
+fn keep_bounce(buf: Vec<u8>) {
+    if buf.len() <= BOUNCE_KEEP_BYTES {
+        BOUNCE.with(|kept| *kept.borrow_mut() = buf);
+    }
 }
 
 #[doc(hidden)]
@@ -455,16 +443,27 @@ pub fn pread_grouped_peeks(
     }
     let windows: Vec<(u64, u64)> = dests.iter().map(|d| (d.off, d.len as u64)).collect();
     let groups = group_body_peeks(&windows);
-    let mut bounce: Vec<Option<Vec<u8>>> = Vec::with_capacity(groups.len());
+    let mut bounce_at: Vec<Option<std::ops::Range<usize>>> = Vec::with_capacity(groups.len());
+    let mut bounce_need = 0usize;
     for (_, span, members) in &groups {
-        let span = usize::try_from(*span).map_err(|_| StoreError::Corrupt("body peek span"))?;
-        bounce.push((members.len() != 1).then(|| take_bounce(span)));
+        if members.len() == 1 {
+            bounce_at.push(None);
+            continue;
+        }
+        let end = usize::try_from(*span)
+            .ok()
+            .and_then(|span| bounce_need.checked_add(span))
+            .ok_or(StoreError::Corrupt("body peek span"))?;
+        bounce_at.push(Some(bounce_need..end));
+        bounce_need = end;
     }
-    // SAFETY: each SQE buffer is a distinct job.body slice (singleton) or bounce
-    // allocation (merged). Dest windows do not overlap jobs in one wave.
+    let mut bounce = take_bounce(bounce_need);
+    // SAFETY: each SQE buffer is a distinct job.body slice (singleton) or a
+    // disjoint bounce range (merged). Dest windows do not overlap jobs in one
+    // wave, and `bounce` is not resized until the reads are done.
     let mut ops: Vec<ReadOp<'_>> = Vec::with_capacity(groups.len());
     for (g, (page_off, span, members)) in groups.iter().enumerate() {
-        let (off, len, direct) = group_sqe(*page_off, *span, members, dests);
+        let (off, _, direct) = group_sqe(*page_off, *span, members, dests);
         let slice = if let Some(wi) = direct {
             let d = &dests[wi];
             let body = &mut jobs[d.job].body;
@@ -472,14 +471,16 @@ pub fn pread_grouped_peeks(
             // SAFETY: dest window is this job's body slice for this wave only.
             unsafe { std::slice::from_raw_parts_mut(ptr, d.len) }
         } else {
-            let Some(buf) = bounce[g].as_mut() else {
+            let Some(at) = bounce_at[g].clone() else {
                 return Err(StoreError::Corrupt(
                     "invariant: merged body peek missing bounce",
                 ));
             };
-            let ptr = buf.as_mut_ptr();
-            // SAFETY: bounce[g] is unique to this merged group until after pread.
-            unsafe { std::slice::from_raw_parts_mut(ptr, len as usize) }
+            let len = at.len();
+            let ptr = bounce[at].as_mut_ptr();
+            // SAFETY: `ptr..ptr + len` is this merged group's bounce range,
+            // disjoint from every other group's, until after pread.
+            unsafe { std::slice::from_raw_parts_mut(ptr, len) }
         };
         ops.push(ReadOp {
             fd: body_fd,
@@ -510,11 +511,12 @@ pub fn pread_grouped_peeks(
             }
             continue;
         }
-        let Some(buf) = bounce[g].as_ref() else {
+        let Some(at) = bounce_at[g].clone() else {
             return Err(StoreError::Corrupt(
                 "invariant: merged body peek missing bounce",
             ));
         };
+        let buf = &bounce[at];
         for &wi in members {
             let d = &dests[wi];
             let rel = d.off.saturating_sub(*page_off) as usize;
@@ -531,7 +533,7 @@ pub fn pread_grouped_peeks(
             }
         }
     }
-    return_bounces(bounce.into_iter().flatten());
+    keep_bounce(bounce);
     Ok(groups.len() as u64)
 }
 

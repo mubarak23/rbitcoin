@@ -460,10 +460,13 @@ fn pipeline_body_backends_agree() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn pread_grouped_peeks_reuses_merged_bounce_buffers() {
-    use rbitcoin_store::io_backend::ReadIoBackend;
+const PEEK_LEN: usize = 64;
+/// Hole between merged groups: over [`BODY_GROUP_MAX_HOLE`], so they stay apart.
+const PEEK_GROUP_STRIDE: u64 = 300 * 1024;
 
+/// A body file holding one 3 MiB patterned script, and the offset where the
+/// script's bytes are safely under way.
+fn peek_body_file() -> (std::path::PathBuf, TxTable, u64) {
     let (dir, t) = temp_tx();
     let tx = TxRecord {
         txid: [0x6au8; 32],
@@ -473,61 +476,156 @@ fn pread_grouped_peeks_reuses_merged_bounce_buffers() {
         output_count: 1,
     };
     let inputs = vec![InputRecord::coinbase(u32::MAX, vec![0x01], vec![])];
-    let outs = vec![OutputRecord::unspent(1, vec![0x51; 20_000])];
+    let script: Vec<u8> = (0..3 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let outs = vec![OutputRecord::unspent(1, script)];
     let fk = t
         .put_full_batch_indexed(&[(tx, inputs, outs)], true)
         .unwrap()[0];
-    let (off, len) = t.body_range(fk).unwrap();
+    let (off, _) = t.body_range(fk).unwrap();
+    (dir, t, off + 4096)
+}
 
-    let len_each = 4096usize;
-    let first = off;
-    let second = off + 4096 + 8192;
-    assert!(second + len_each as u64 <= off + len);
-    let windows = [(first, len_each as u64), (second, len_each as u64)];
-    let groups = group_body_peeks(&windows);
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].2, vec![0, 1]);
+/// Two windows one page apart: one merged group of about two pages.
+fn small_group(at: u64) -> [u64; 2] {
+    [at, at + 4096]
+}
 
-    let mut jobs = [0, 1].map(|i| IdxBodyJob {
-        id: i + 1,
-        range: None,
-        body: vec![0u8; len_each],
-        ok: false,
-        need_vouts: Vec::new(),
-        n_out: 0,
-    });
-    let dests = [
-        PeekDest {
-            job: 0,
-            off: first,
+/// Four windows 60 KiB apart: one merged group of about 180 KiB.
+fn large_group(at: u64) -> [u64; 4] {
+    [at, at + 60 * 1024, at + 120 * 1024, at + 180 * 1024]
+}
+
+fn merged_bytes(offs: &[u64]) -> u64 {
+    let windows: Vec<(u64, u64)> = offs.iter().map(|o| (*o, PEEK_LEN as u64)).collect();
+    group_body_peeks(&windows)
+        .iter()
+        .filter(|(_, _, members)| members.len() > 1)
+        .map(|(_, span, _)| *span)
+        .sum()
+}
+
+struct PeekWave {
+    jobs: Vec<IdxBodyJob>,
+    groups: u64,
+    asked: crate::alloc_count::Asked,
+}
+
+/// One job per window, read with the shipped pread grouper.
+fn peek_wave(t: &TxTable, offs: &[u64]) -> PeekWave {
+    let mut jobs: Vec<IdxBodyJob> = (0..offs.len())
+        .map(|i| IdxBodyJob {
+            id: i as u64 + 1,
+            range: None,
+            body: vec![0u8; PEEK_LEN],
+            ok: false,
+            need_vouts: Vec::new(),
+            n_out: 0,
+        })
+        .collect();
+    let dests: Vec<PeekDest> = offs
+        .iter()
+        .enumerate()
+        .map(|(job, off)| PeekDest {
+            job,
+            off: *off,
             dest: 0,
-            len: len_each,
-        },
-        PeekDest {
-            job: 1,
-            off: second,
-            dest: 0,
-            len: len_each,
-        },
-    ];
+            len: PEEK_LEN,
+        })
+        .collect();
     let fd = t.body.body_read_fd();
     let path = t.body.body_file_path();
-    let backend = ReadIoBackend::Pread;
-    pread_grouped_peeks(&mut jobs, &dests, fd, path, backend, true).unwrap();
-    let first_body = jobs[0].body.clone();
-    let second_body = jobs[1].body.clone();
-
-    let (groups_n, asked) = crate::alloc_count::asked_by(|| {
+    let backend = rbitcoin_store::io_backend::ReadIoBackend::Pread;
+    let (groups, asked) = crate::alloc_count::asked_by(|| {
         pread_grouped_peeks(&mut jobs, &dests, fd, path, backend, true).unwrap()
     });
-    assert_eq!(groups_n, 1);
-    assert_eq!(jobs[0].body, first_body);
-    assert_eq!(jobs[1].body, second_body);
-    let span = groups[0].1;
+    PeekWave {
+        jobs,
+        groups,
+        asked,
+    }
+}
+
+fn assert_peeked(t: &TxTable, offs: &[u64], wave: &PeekWave) {
+    let file = std::fs::read(t.body.body_file_path()).unwrap();
+    for (off, job) in offs.iter().zip(&wave.jobs) {
+        let at = *off as usize;
+        assert!(job.ok, "window at {off} not read");
+        assert_eq!(job.body, file[at..at + PEEK_LEN], "window at {off}");
+    }
+}
+
+#[test]
+fn merged_bounce_stays_for_a_large_span_after_many_small_groups() {
+    let (dir, t, base) = peek_body_file();
+    let small: Vec<u64> = (0..17)
+        .flat_map(|k| small_group(base + k * PEEK_GROUP_STRIDE))
+        .collect();
+    let large = large_group(base + 9 * PEEK_GROUP_STRIDE + 8192);
+    let span = merged_bytes(&large);
+
+    assert_eq!(peek_wave(&t, &small).groups, 17);
+    let first = peek_wave(&t, &large);
+    assert_eq!(first.groups, 1);
     assert!(
-        asked.largest < span,
+        first.asked.largest >= span,
+        "a kept bounce smaller than the span must grow: largest={} span={span}",
+        first.asked.largest
+    );
+    let again = peek_wave(&t, &large);
+    assert_peeked(&t, &large, &again);
+    assert!(
+        again.asked.largest < span,
         "largest={} span={span}: the merged bounce was reallocated",
-        asked.largest
+        again.asked.largest
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn merged_bounce_over_the_keep_cap_is_not_kept() {
+    let (dir, t, base) = peek_body_file();
+    let one = large_group(base);
+    let many: Vec<u64> = (1..=7)
+        .flat_map(|k| large_group(base + k * PEEK_GROUP_STRIDE))
+        .collect();
+    let many_bytes = merged_bytes(&many);
+    assert!(many_bytes > 1024 * 1024, "{many_bytes}");
+
+    peek_wave(&t, &one);
+    peek_wave(&t, &many);
+    let many_again = peek_wave(&t, &many);
+    assert_eq!(many_again.groups, 7);
+    assert_peeked(&t, &many, &many_again);
+    assert!(
+        many_again.asked.bytes >= many_bytes,
+        "a wave over the cap kept {} of {many_bytes} bounce bytes",
+        many_bytes - many_again.asked.bytes.min(many_bytes)
+    );
+    let one_again = peek_wave(&t, &one);
+    assert!(
+        one_again.asked.largest < merged_bytes(&one),
+        "the kept bounce was lost to the wave over the cap: largest={}",
+        one_again.asked.largest
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_reused_bounce_never_fills_a_window_past_a_short_read() {
+    let (dir, t, base) = peek_body_file();
+    let large = large_group(base);
+    peek_wave(&t, &large);
+
+    let file_len = std::fs::metadata(t.body.body_file_path()).unwrap().len();
+    let tail = [file_len - 200, file_len - 32];
+    let wave = peek_wave(&t, &tail);
+    assert_eq!(wave.groups, 1);
+    assert_peeked(&t, &tail[..1], &wave);
+    assert!(!wave.jobs[1].ok, "a window past EOF read as ok");
+    assert_eq!(
+        wave.jobs[1].body,
+        vec![0u8; PEEK_LEN],
+        "stale bounce bytes reached a window past EOF"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
