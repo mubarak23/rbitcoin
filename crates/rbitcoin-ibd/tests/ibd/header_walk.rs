@@ -8314,6 +8314,20 @@ fn hw_pin_the_only_live_peer_is_asked_after_its_miss() {
     assert_eq!(pick_any_header_peer(&st, Some(0)), None);
 }
 
+/// A quiet peer whose ask just expired gives way to another quiet peer.
+/// That peer is asked only when nobody else is left. `||` to `&&` in the
+/// fallback drops the last quiet peer. Deleting `!` asks the expired peer
+/// while the other quiet peer is still there.
+#[test]
+fn hw_pin_a_quiet_miss_asks_the_other_quiet_peer() {
+    let (_dir, _hub, mut st, _gen) = opened("hw-quiet-skip", false);
+    st.header_walk.walk_quiet.insert(0);
+    st.header_walk.walk_quiet.insert(1);
+    assert_eq!(pick_any_header_peer(&st, Some(0)), Some(1));
+    st.slots.pop();
+    assert_eq!(pick_any_header_peer(&st, Some(0)), Some(0));
+}
+
 /// A reserved peer who cannot head the walk gives way. The skipped peer
 /// gives way when someone else can.
 #[test]

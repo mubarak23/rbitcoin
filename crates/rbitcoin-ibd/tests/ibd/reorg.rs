@@ -55,6 +55,40 @@ fn unproved_lead_rewinds_past_1024_and_a_proved_walk_does_not() {
     let _ = dir;
 }
 
+/// Unreadable confirmed work keeps an unproved origin walk on the wide cap.
+/// Deleting `!` in that fallback uses 1,024 and would leave a 1,025 tip in
+/// place. A proved walk stays on 1,024 even when the read fails.
+#[test]
+fn unreadable_chain_work_keeps_the_unproved_lead() {
+    let (dir, hub) = tmp_hub();
+    let (_kept, _side) = confirm_past_1024(&hub, 1_500_120_000);
+    hub.test_clear_chain_work_prefix();
+    hub.query
+        .store()
+        .confirmed
+        .set(
+            &rbitcoin_store::ClassCWrite::for_test(),
+            rbitcoin_primitives::Height(1),
+            rbitcoin_primitives::Fk(9_000),
+        )
+        .unwrap();
+    assert!(hub.chain_work().is_err());
+    let mut st =
+        rbitcoin_ibd::ibd::state::IbdWorkState::new(Vec::new(), hub.tip_hash(), Some(1_025));
+    st.header_walk.origin = true;
+    st.header_walk.proven = false;
+    assert_eq!(
+        rbitcoin_ibd::ibd::header_walk::rewind_depth_cap(&st, &hub),
+        rbitcoin_ibd::ibd::header_walk::UNPROVEN_LEAD_BLOCKS
+    );
+    st.header_walk.proven = true;
+    assert_eq!(
+        rbitcoin_ibd::ibd::header_walk::rewind_depth_cap(&st, &hub),
+        REWIND_MAX_DEPTH
+    );
+    let _ = dir;
+}
+
 /// `publish_work` marks the heavier headers proved before the confirmed tip
 /// leaves. That tip is still the unproved lead, so the rewind covers it.
 /// Once the confirmed tip meets the floor, 1,025 blocks is refused.

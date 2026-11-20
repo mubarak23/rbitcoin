@@ -1142,6 +1142,21 @@ pub async fn write_ibd_peer(
     }
 }
 
+/// Aborts both halves when the parent task is cancelled. A dropped
+/// `JoinHandle` only detaches, so the read half would keep the socket.
+#[doc(hidden)]
+pub struct PeerIoTasks {
+    pub reader: tokio::task::JoinHandle<()>,
+    pub writer: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PeerIoTasks {
+    fn drop(&mut self) {
+        self.reader.abort();
+        self.writer.abort();
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // call-site args stay unbundled
 pub async fn spawn_peer(
     id: usize,
@@ -1207,20 +1222,6 @@ pub async fn spawn_peer(
     // Drop / stall disconnect) must abort both children — plain JoinHandle drop
     // only detaches.
     let task = tokio::spawn(async move {
-        /// Aborts both halves if the parent task is cancelled mid-flight.
-        struct PeerIoTasks {
-            reader: tokio::task::JoinHandle<()>,
-            writer: tokio::task::JoinHandle<()>,
-        }
-        /// Parent cancel must abort both halves. A dropped handle only detaches.
-        #[cfg_attr(false, mutants::skip)]
-        impl Drop for PeerIoTasks {
-            fn drop(&mut self) {
-                self.reader.abort();
-                self.writer.abort();
-            }
-        }
-
         // Reader first: Core pipelines sendheaders/sendcmpct/… right after verack.
         // July 18 cold-start worked with **no** post-handshake getaddr/sendaddrv2
         // before getheaders; those writes raced Core's pipeline and peers closed

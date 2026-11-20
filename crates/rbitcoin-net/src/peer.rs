@@ -7868,6 +7868,7 @@ fn classify_headers(
         answers_getheaders: n == 0,
     };
     let mut ignored_below_floor = false;
+    let mut ask_from_tip = false;
     if n == 0 {
         // Empty headers is a failed getheaders response, not an announcement.
     } else if !noban && headers_are_below_floor(hub, pending_before, headers) {
@@ -7942,10 +7943,10 @@ fn classify_headers(
         }
         if !connecting {
             // These headers are not sent to the store. A later parent can
-            // still join them. A full batch is overwritten below with a
-            // locator from its last hash, so this ask only changes a short one.
+            // still join them. A short batch asks from our tip. A full page
+            // continues from its last hash, below.
             queue_batch_admits(&mut apply, headers);
-            apply.getheaders = Some(headers_sync_locator(hub, None));
+            ask_from_tip = true;
         } else {
             let last = headers[n - 1].block_hash();
             // Core `chain_start.nHeight + headers.size()`. One-header
@@ -8012,6 +8013,8 @@ fn classify_headers(
     if n >= MAX_HEADERS_RESULTS && !ignored_below_floor {
         let from = headers.get(n - 1).map(|h| h.block_hash());
         apply.getheaders = Some(headers_sync_locator(hub, from));
+    } else if ask_from_tip {
+        apply.getheaders = Some(headers_sync_locator(hub, None));
     }
     if n > 0 {
         if let Some(last) = headers.last() {
@@ -8430,7 +8433,6 @@ pub async fn on_block(
     on_block_accept(hub, out_tx, follow, session, block, hash).await
 }
 
-// `get` instead of `!contains_key`: that `!` was not a session result.
 #[allow(clippy::unnecessary_get_then_check)]
 #[doc(hidden)]
 pub fn on_block_unrequested_skip(

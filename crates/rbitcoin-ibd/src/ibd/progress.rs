@@ -273,9 +273,9 @@ pub const ETA_RATE_HALF_LIFE_SECS: f64 = 90.0;
 #[doc(hidden)]
 pub const ETA_MIN_ELAPSED_SECS: f64 = 20.0;
 
-// Dust-rate floor for the soft-pressure window. A rate of exactly `1e-6`
-// is not one the walk produces, so `>` and `>=` are the same result.
-#[cfg_attr(false, mutants::skip)]
+/// Dust below this is not a confirm window. Exactly `1e-6` blocks/s still
+/// leaves the window closed. `soft_confirm_window_n` would otherwise open
+/// one block.
 fn above_eta_floor(rate: f64) -> bool {
     rate > 1e-6
 }
