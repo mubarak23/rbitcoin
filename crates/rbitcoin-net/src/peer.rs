@@ -631,6 +631,1981 @@ mod decode_queue_cap {
             "one heavy byte past the process cap must disconnect"
         );
     }
+
+    /// The session loop reads the front frame's length and weight while the
+    /// queue owns the process-wide heavy-byte count. Dropping the queue
+    /// returns those bytes.
+    #[test]
+    fn front_frame_and_heavy_bytes_follow_the_queue() {
+        let _turn = turn();
+        let mut heavy = DecodeQueue::new();
+        heavy.push(parked(), 7, true, None);
+        assert_eq!(heavy.front_len(), 7);
+        assert!(heavy.front_heavy());
+        heavy.push(parked(), 4, false, None);
+        assert_eq!(heavy.front_len(), 7);
+        assert!(heavy.front_heavy());
+        let mut cheap = DecodeQueue::new();
+        cheap.push(parked(), 4, false, None);
+        assert_eq!(cheap.front_len(), 4);
+        assert!(!cheap.front_heavy());
+
+        let per = DECODE_Q_MAX_BYTES;
+        let pools = crate::msg_decode::blocking_pool_size();
+        let mut held = Vec::new();
+        for _ in 0..pools {
+            let mut q = DecodeQueue::new();
+            let _ = q.push(parked(), per - 1, true, None);
+            held.push(q);
+        }
+        let mut extra = DecodeQueue::new();
+        assert!(
+            extra.push(parked(), per - 1, true, None),
+            "one more peer past the process cap must disconnect"
+        );
+        drop(extra);
+        drop(held);
+        let mut again = DecodeQueue::new();
+        assert!(
+            !again.push(parked(), per - 1, true, None),
+            "dropped queues return their heavy bytes"
+        );
+    }
+}
+
+#[cfg(test)]
+mod staged_body_keep {
+    use super::keep_staged_body_after_accept_err;
+    use crate::error::NetError;
+
+    /// A store fault and a cancel are not a verdict on the staged bytes.
+    /// An untrusted warn-and-apply reject is. Trust keeps that warn.
+    #[test]
+    fn keep_staged_store_fault_and_untrusted_warn() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("staged-keep");
+        let store = NetError::Store("budget full".into());
+        assert!(
+            keep_staged_body_after_accept_err(&hub, &store),
+            "a store fault that is not a missing row keeps the staged body"
+        );
+        let warn = NetError::Consensus("bad-cb-amount".into());
+        assert!(
+            !keep_staged_body_after_accept_err(&hub, &warn),
+            "an untrusted warn-and-apply reject drops the staged body"
+        );
+        hub.query.set_trust_peer(true);
+        assert!(
+            keep_staged_body_after_accept_err(&hub, &warn),
+            "a trusted warn-and-apply reject keeps the staged body"
+        );
+    }
+}
+
+#[cfg(test)]
+mod peer_queue_pins {
+    use super::{
+        note_block_request_window, outbound_write_rank, take_outbound_write_batch, PeerFollowState,
+        PeerOut, PendingBlocks,
+    };
+    use bitcoin::hashes::Hash;
+    use bitcoin::p2p::message::NetworkMessage;
+    use bitcoin::{Block, BlockHash};
+
+    fn bare_block(n: u8) -> Block {
+        Block {
+            header: bitcoin::block::Header {
+                version: bitcoin::block::Version::ONE,
+                prev_blockhash: BlockHash::from_byte_array([n; 32]),
+                merkle_root: bitcoin::TxMerkleNode::from_byte_array([n; 32]),
+                time: u32::from(n),
+                bits: bitcoin::CompactTarget::from_consensus(0x207f_ffff),
+                nonce: u32::from(n),
+            },
+            txdata: vec![],
+        }
+    }
+
+    /// Empty asks clear the window. A larger set, or the first ask (`n_req`
+    /// was 0), starts it. A set that stays the same size does not.
+    #[test]
+    fn peer_queue_window_tracks_asks() {
+        let empty = PeerFollowState::new();
+        let mut since = Some(std::time::Instant::now());
+        note_block_request_window(&empty, 1, &mut since);
+        assert!(since.is_none(), "no asks left clears the window");
+
+        let mut grew = PeerFollowState::new();
+        grew.requested_blocks
+            .insert(BlockHash::from_byte_array([1; 32]));
+        let mut since = None;
+        note_block_request_window(&grew, 2, &mut since);
+        assert!(since.is_some(), "one ask of two starts the window");
+
+        let mut first = PeerFollowState::new();
+        first
+            .requested_blocks
+            .insert(BlockHash::from_byte_array([1; 32]));
+        let mut since = None;
+        note_block_request_window(&first, 0, &mut since);
+        assert!(since.is_some(), "the first ask starts the window");
+
+        let mut held = PeerFollowState::new();
+        held.requested_blocks
+            .insert(BlockHash::from_byte_array([1; 32]));
+        held.requested_blocks
+            .insert(BlockHash::from_byte_array([2; 32]));
+        let mut since = None;
+        note_block_request_window(&held, 2, &mut since);
+        assert!(since.is_none(), "the same ask count leaves the window");
+    }
+
+    /// `values` walks the map. `remove` drops that hash from the FIFO.
+    #[test]
+    fn peer_queue_pending_remove_keeps_the_other() {
+        let mut pending = PendingBlocks::new();
+        let first = bare_block(1);
+        let second = bare_block(2);
+        let a = first.block_hash();
+        let b = second.block_hash();
+        pending.insert(a, first);
+        pending.insert(b, second);
+        assert_eq!(pending.values().count(), 2);
+        pending.remove(&a);
+        assert_eq!(pending.fifo.iter().copied().collect::<Vec<_>>(), vec![b]);
+        assert_eq!(pending.values().count(), 1);
+    }
+
+    /// A pong is last in the batch. Headers and inv stay ahead of it.
+    #[test]
+    fn peer_queue_pong_sorts_after_headers() {
+        let pong = PeerOut::Msg(NetworkMessage::Pong(1));
+        let headers = PeerOut::Msg(NetworkMessage::Headers(vec![]));
+        assert!(outbound_write_rank(&pong) > outbound_write_rank(&headers));
+    }
+
+    /// One drain takes at most 64 queued messages.
+    #[test]
+    fn peer_queue_batch_stops_at_sixty_four() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for i in 0..80u64 {
+            tx.send(PeerOut::Msg(NetworkMessage::Pong(i))).unwrap();
+        }
+        let first = rx.try_recv().unwrap();
+        let batch = take_outbound_write_batch(first, &mut rx);
+        assert_eq!(batch.len(), 64);
+    }
+}
+
+#[cfg(test)]
+mod peer_header_pins {
+    use super::{
+        add_pending_ancestors, announced_tip_is_hopeless, classify_headers, disconnected_pending,
+        drop_hashes_until_fit, evict_pending_for_room, header_announcement_connects,
+        maybe_expire_block_requests, pending_root, pending_walk, BLOCK_GETDATA_TIMEOUT,
+        MAX_PENDING_HEADERS, PENDING_WALK_LIMIT,
+    };
+    use bitcoin::hashes::Hash;
+    use bitcoin::BlockHash;
+    use std::collections::{HashMap, HashSet};
+
+    /// Bits harder than the regtest pow limit. Claimed proof of work fails.
+    fn hard_hdr(prev: BlockHash, n: u32) -> bitcoin::block::Header {
+        let mut header = hdr(prev, n);
+        header.bits = bitcoin::CompactTarget::from_consensus(0x1d00_ffff);
+        header
+    }
+
+    fn hdr(prev: BlockHash, n: u32) -> bitcoin::block::Header {
+        bitcoin::block::Header {
+            version: bitcoin::block::Version::ONE,
+            prev_blockhash: prev,
+            merkle_root: bitcoin::TxMerkleNode::from_byte_array([n as u8; 32]),
+            time: n,
+            bits: bitcoin::CompactTarget::from_consensus(0x207f_ffff),
+            nonce: n,
+        }
+    }
+
+    /// Equal age is still inside the ancient window. One block older is not.
+    #[test]
+    fn peer_header_hopeless_starts_past_the_window() {
+        use std::cmp::Ordering::Less;
+        assert!(!announced_tip_is_hopeless(288, 0, Some(Less)));
+        assert!(announced_tip_is_hopeless(289, 0, Some(Less)));
+    }
+
+    /// The root is the pending header whose parent is not in the map.
+    #[test]
+    fn peer_header_root_is_the_oldest() {
+        let parent_prev = BlockHash::from_byte_array([7; 32]);
+        let parent = hdr(parent_prev, 1);
+        let parent_hash = parent.block_hash();
+        let child = hdr(parent_hash, 2);
+        let child_hash = child.block_hash();
+        let mut pending = HashMap::new();
+        pending.insert(parent_hash, parent);
+        pending.insert(child_hash, child);
+        let mut roots = HashMap::new();
+        assert_eq!(pending_root(&pending, child_hash, &mut roots), parent_hash);
+        let mut seen = HashSet::new();
+        add_pending_ancestors(&mut seen, &pending, child_hash);
+        assert!(seen.contains(&parent_hash));
+        assert!(seen.contains(&child_hash));
+    }
+
+    /// One hash over the cap is dropped. The cap is the pending map plus
+    /// the headers this call still has to store.
+    #[test]
+    fn peer_header_drop_removes_the_hash_over_cap() {
+        let mut pending = HashMap::new();
+        let header = hdr(BlockHash::from_byte_array([3; 32]), 4);
+        let hash = header.block_hash();
+        pending.insert(hash, header);
+        drop_hashes_until_fit(&mut pending, MAX_PENDING_HEADERS, [hash]);
+        assert!(pending.is_empty());
+    }
+
+    /// The walk returns the hash at the step limit, not the one after it.
+    #[test]
+    fn peer_header_walk_stops_at_the_limit() {
+        let limit = PENDING_WALK_LIMIT;
+        let mut prev = BlockHash::from_byte_array([9; 32]);
+        let mut pending = HashMap::new();
+        let mut hashes = Vec::with_capacity(limit + 1);
+        for i in 0..=limit {
+            let header = hdr(prev, i as u32);
+            let hash = header.block_hash();
+            pending.insert(hash, header);
+            hashes.push(hash);
+            prev = hash;
+        }
+        let (join, steps) = pending_walk(&pending, hashes[limit]);
+        assert_eq!(steps, limit as u32);
+        assert_eq!(join, hashes[0]);
+    }
+
+    /// A held body is a header we know. Walking its pending parent must not
+    /// hide that.
+    #[test]
+    fn peer_header_held_prev_connects() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-connect");
+        let header = hdr(BlockHash::from_byte_array([4; 32]), 8);
+        let known = header.block_hash();
+        hub.hold_body(
+            std::sync::Arc::new(bitcoin::Block {
+                header,
+                txdata: vec![],
+            }),
+            false,
+        );
+        let mut pending = HashMap::new();
+        pending.insert(known, header);
+        assert!(header_announcement_connects(&hub, &pending, known));
+    }
+
+    /// A parent of all zeros does not connect. Protecting that header keeps it.
+    #[test]
+    fn peer_header_zero_parent_stays_disconnected() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-disc");
+        let header = hdr(BlockHash::all_zeros(), 5);
+        let hash = header.block_hash();
+        let mut pending = HashMap::new();
+        pending.insert(hash, header);
+        let open = disconnected_pending(&hub, &pending, &HashSet::new());
+        assert_eq!(open, vec![hash]);
+        let mut protected = HashSet::new();
+        protected.insert(hash);
+        assert!(disconnected_pending(&hub, &pending, &protected).is_empty());
+    }
+
+    /// A short batch that does not connect still asks for headers.
+    #[test]
+    fn peer_header_short_disconnected_batch_asks_again() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-short");
+        hub.ensure_genesis().expect("genesis");
+        let header = hdr(BlockHash::from_byte_array([1; 32]), 3);
+        let apply = classify_headers(
+            &hub,
+            &[header],
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            false,
+        );
+        assert!(apply.getheaders.is_some());
+    }
+
+    fn junk_pending(n: usize) -> HashMap<BlockHash, bitcoin::block::Header> {
+        let mut pending = HashMap::with_capacity(n);
+        for i in 0..n {
+            let mut header = hard_hdr(BlockHash::from_byte_array([1; 32]), i as u32);
+            let mut root = [0u8; 32];
+            root[..4].copy_from_slice(&(i as u32).to_le_bytes());
+            header.merkle_root = bitcoin::TxMerkleNode::from_byte_array(root);
+            pending.insert(header.block_hash(), header);
+        }
+        pending
+    }
+
+    fn pow_chain(
+        hub: &crate::chain::ChainHub,
+        mut prev: BlockHash,
+        n: usize,
+    ) -> Vec<bitcoin::block::Header> {
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut header = hdr(prev, i as u32);
+            let mut root = [2u8; 32];
+            root[..4].copy_from_slice(&(i as u32).to_le_bytes());
+            header.merkle_root = bitcoin::TxMerkleNode::from_byte_array(root);
+            let mut found = false;
+            for nonce in 0..1_000_000u32 {
+                header.nonce = nonce;
+                if hub.header_claimed_pow_ok(&header) {
+                    prev = header.block_hash();
+                    out.push(header);
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found, "regtest header {i}");
+        }
+        out
+    }
+
+    /// A connecting header at the cap is kept. A batch larger than the cap
+    /// is not admitted, even when every header's claimed work is valid.
+    #[test]
+    fn peer_header_cap_keeps_a_connecting_header() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-cap");
+        hub.ensure_genesis().expect("genesis");
+        let tip = hub.tip_hash().expect("tip");
+        let at_cap = hard_hdr(tip, 9);
+        let apply = classify_headers(
+            &hub,
+            &[at_cap],
+            &junk_pending(MAX_PENDING_HEADERS - 1),
+            &HashSet::new(),
+            &HashSet::new(),
+            false,
+        );
+        assert!(
+            apply.from_peer.contains(&at_cap.block_hash()),
+            "the cap itself is not an overflow"
+        );
+        let batch = pow_chain(&hub, tip, MAX_PENDING_HEADERS + 1);
+        let over = classify_headers(
+            &hub,
+            &batch,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            false,
+        );
+        assert!(
+            over.from_peer.is_empty(),
+            "a batch larger than the cap is not admitted"
+        );
+    }
+
+    /// Ten seconds is already late. The ask is dropped.
+    #[test]
+    fn peer_header_expire_at_the_timeout() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-expire");
+        let hash = BlockHash::from_byte_array([6; 32]);
+        let mut requested = HashSet::new();
+        requested.insert(hash);
+        let start = std::time::Instant::now() - BLOCK_GETDATA_TIMEOUT;
+        let mut since = Some(start);
+        assert!(maybe_expire_block_requests(
+            &hub,
+            &mut requested,
+            &mut since,
+            start + BLOCK_GETDATA_TIMEOUT,
+            None,
+        ));
+        assert!(requested.is_empty());
+    }
+
+    /// One invalid header in the batch is misbehavior. The parent can be fine.
+    #[test]
+    fn peer_header_invalid_batch_misbehaves() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-invalid");
+        let header = hdr(BlockHash::all_zeros(), 9);
+        let hash = header.block_hash();
+        hub.note_invalid_block(hash);
+        let apply = classify_headers(
+            &hub,
+            &[header],
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            false,
+        );
+        assert!(apply.misbehave);
+    }
+
+    /// Failed claimed proof of work leaves first. The connected tip is not a
+    /// failed fork, so a later stage does not drop it. Ancestors of `prev` stay.
+    #[test]
+    fn peer_header_failed_pow_is_evicted_first() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hdr-evict");
+        hub.ensure_genesis().expect("genesis");
+        let tip = hub.tip_hash().expect("regtest tip");
+        let held_header = hdr(BlockHash::from_byte_array([1; 32]), 3);
+        let held = held_header.block_hash();
+        hub.hold_body(
+            std::sync::Arc::new(bitcoin::Block {
+                header: held_header,
+                txdata: vec![],
+            }),
+            false,
+        );
+        let weak = hard_hdr(held, 11);
+        let mut open = HashMap::new();
+        open.insert(tip, weak);
+        evict_pending_for_room(
+            &hub,
+            &mut open,
+            BlockHash::from_byte_array([8; 32]),
+            &[],
+            MAX_PENDING_HEADERS,
+        );
+        assert!(
+            !open.contains_key(&tip),
+            "unprotected failed pow is dropped"
+        );
+
+        let mut kept = HashMap::new();
+        kept.insert(tip, hard_hdr(held, 12));
+        evict_pending_for_room(&hub, &mut kept, tip, &[], MAX_PENDING_HEADERS);
+        assert!(kept.contains_key(&tip), "an ancestor of prev stays");
+    }
+}
+
+#[cfg(test)]
+mod peer_session_pins {
+    use super::{
+        addrfetch_timed_out, announce_unsent_tip, apply_cmpct_accept, apply_queued_decodes,
+        ask_other_hb_for_block, finish_block_accept, getheaders_apply, handle_peer_control_msg,
+        header_is_stored, inbound_connect_and_handshake, on_addr_list, on_block_unrequested_skip,
+        on_cmpctblock, on_getblocks, on_headers_poll, on_heartbeat, on_inv,
+        on_inv_block_needs_headers, on_tip_event, queue_due_tx_invs, read_peer_version,
+        reconstruct_cmpct_from_mempool, requeue_later_pong, schedule_orphan_parent_getdata,
+        serve_getdata_full_block, serve_getdata_tail, serve_mempool_getdata,
+        tip_event_for_announce, tip_follow_locator, tx_announce_inbound_gated,
+        tx_announce_maybe_count, tx_announce_peer_ok, tx_announce_should_queue,
+        tx_inv_candidate_ok, wait_peer_verack, DecodeQueue, FullBlockReply, HandshakePolicy,
+        PeerFollowState, ADDRFETCH_TIMEOUT_SECS, BAN_SCORE_THRESHOLD, BLOCK_GETDATA_TIMEOUT,
+        MAX_ADDR_TO_SEND, MAX_BLOCKS_TO_ANNOUNCE, MAX_LOCATOR_SZ, MIN_PEER_PROTO_VERSION,
+    };
+    use crate::peers::{PeerConnType, PeerHub, PeerOut};
+    use bitcoin::hashes::Hash;
+    use bitcoin::p2p::address::Address;
+    use bitcoin::p2p::message::NetworkMessage;
+    use bitcoin::p2p::message_blockdata::Inventory;
+    use bitcoin::p2p::message_network::VersionMessage;
+    use bitcoin::p2p::ServiceFlags;
+    use bitcoin::BlockHash;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn version() -> VersionMessage {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18444);
+        VersionMessage {
+            version: 70016,
+            services: ServiceFlags::NETWORK,
+            timestamp: 0,
+            receiver: Address::new(&addr, ServiceFlags::NONE),
+            sender: Address::new(&addr, ServiceFlags::NONE),
+            nonce: 1,
+            user_agent: "/rbitcoin:0.1.0/".into(),
+            start_height: 0,
+            relay: true,
+        }
+    }
+
+    fn peer(
+        kind: PeerConnType,
+    ) -> (
+        std::sync::Arc<PeerHub>,
+        std::sync::Arc<crate::peers::LivePeer>,
+    ) {
+        let peers = PeerHub::new();
+        peers.set_mock_now(1_000);
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18444);
+        let live = peers.register(addr, addr, &version(), false, kind);
+        (peers, live)
+    }
+
+    fn inbound() -> std::sync::Arc<crate::peers::LivePeer> {
+        let peers = PeerHub::new();
+        peers.set_mock_now(1_000);
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18444);
+        peers.register(addr, addr, &version(), true, PeerConnType::Inbound)
+    }
+
+    fn asked_headers(
+        hub: &crate::chain::ChainHub,
+        session: Option<&crate::peers::LivePeer>,
+    ) -> bool {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        on_headers_poll(hub, &tx, session);
+        matches!(
+            rx.try_recv(),
+            Ok(PeerOut::Msg(NetworkMessage::GetHeaders(_)))
+        )
+    }
+
+    /// Addr-fetch is not polled. A full-relay peer with no best header is.
+    #[test]
+    fn peer_session_polls_full_relay_not_addrfetch() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("poll");
+        let (_peers, addrfetch) = peer(PeerConnType::AddrFetch);
+        assert!(!asked_headers(&hub, Some(&addrfetch)));
+        let (_peers, full) = peer(PeerConnType::OutboundFullRelay);
+        assert!(asked_headers(&hub, Some(&full)));
+    }
+
+    /// The addr-fetch session is still inside the window at exactly 300s.
+    #[test]
+    fn peer_session_addrfetch_expires_after_three_hundred() {
+        let (peers, live) = peer(PeerConnType::AddrFetch);
+        peers.set_mock_now(1_000 + ADDRFETCH_TIMEOUT_SECS);
+        assert!(!addrfetch_timed_out(&live));
+        peers.set_mock_now(1_001 + ADDRFETCH_TIMEOUT_SECS);
+        assert!(addrfetch_timed_out(&live));
+    }
+
+    /// A pong that cannot be queued must release the claim.
+    #[test]
+    fn peer_session_failed_pong_releases_the_claim() {
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        live.store_pong_nonce(7);
+        assert!(live.claim_pong_send());
+        requeue_later_pong(&live, 1);
+        assert!(live.claim_pong_send());
+    }
+
+    /// An outbound peer is not counted. An inbound peer is counted only while
+    /// relay is on, and that same peer is not offered its own inbound inv.
+    #[test]
+    fn peer_session_inbound_gate_needs_relay() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("tx-gate");
+        let pool_dir = dir.path().join("pool");
+        std::fs::create_dir_all(&pool_dir).expect("pool dir");
+        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
+            &pool_dir,
+            hub.query.clone(),
+            400_000,
+            false,
+        )
+        .expect("mempool");
+        let txid = bitcoin::Txid::from_byte_array([1; 32]);
+        let (_peers, outbound) = peer(PeerConnType::OutboundFullRelay);
+        mp.set_relay_enabled(true);
+        assert!(!tx_announce_inbound_gated(&outbound, &mp, &txid));
+        let inn = inbound();
+        mp.set_relay_enabled(false);
+        assert!(!tx_announce_inbound_gated(&inn, &mp, &txid));
+        mp.set_relay_enabled(true);
+        assert!(tx_announce_inbound_gated(&inn, &mp, &txid));
+        assert!(!tx_announce_peer_ok(Some(&inn), &mp, &txid));
+    }
+
+    /// A thousand addresses is the cap. One more is misbehavior.
+    #[test]
+    fn peer_session_addr_list_over_one_thousand_is_misbehavior() {
+        let (_peers, live) = peer(PeerConnType::AddrFetch);
+        let sock = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18444);
+        let addr = Address::new(&sock, ServiceFlags::NONE);
+        let at = |n: usize| vec![(0u32, addr.clone()); n];
+        let mut follow = PeerFollowState::new();
+        on_addr_list(&mut follow, Some(&live), &at(MAX_ADDR_TO_SEND)).unwrap();
+        assert_eq!(follow.ban_score, 0);
+        on_addr_list(&mut follow, Some(&live), &at(MAX_ADDR_TO_SEND + 1)).unwrap();
+        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
+    }
+
+    /// A matching pong clears the outstanding ping.
+    #[test]
+    fn peer_wire_pong_clears_the_nonce() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("pong-arm");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        live.ping_nonce_sent
+            .store(9, std::sync::atomic::Ordering::Relaxed);
+        live.ping_start_secs
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        assert!(handle_peer_control_msg(
+            &NetworkMessage::Pong(9),
+            &hub,
+            &tx,
+            &mut follow,
+            Some(&live),
+        )
+        .unwrap());
+        assert_eq!(
+            live.ping_nonce_sent
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    /// A sendcmpct whose announce byte is neither 0 nor 1 is misbehavior.
+    #[test]
+    fn peer_wire_bad_sendcmpct_is_misbehavior() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("sendcmpct-arm");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        let msg = NetworkMessage::Unknown {
+            command: bitcoin::p2p::message::CommandString::try_from("sendcmpct").unwrap(),
+            payload: vec![2],
+        };
+        assert!(handle_peer_control_msg(&msg, &hub, &tx, &mut follow, Some(&live)).unwrap());
+        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
+    }
+
+    /// A locator of 101 hashes is served. One more is misbehavior.
+    #[test]
+    fn peer_wire_getblocks_at_the_cap_stays() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("gb-cap");
+        hub.ensure_genesis().expect("genesis");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let stop = BlockHash::all_zeros();
+        let within: Vec<BlockHash> = (0..MAX_LOCATOR_SZ)
+            .map(|i| BlockHash::from_byte_array([i as u8; 32]))
+            .collect();
+        let mut follow = PeerFollowState::new();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(on_getblocks(
+            &hub,
+            &tx,
+            &mut follow,
+            Some(&live),
+            &bitcoin::p2p::message_blockdata::GetBlocksMessage::new(within, stop),
+        ))
+        .unwrap();
+        assert_eq!(follow.ban_score, 0);
+        let over: Vec<BlockHash> = (0..=MAX_LOCATOR_SZ)
+            .map(|i| BlockHash::from_byte_array([i as u8; 32]))
+            .collect();
+        rt.block_on(on_getblocks(
+            &hub,
+            &tx,
+            &mut follow,
+            Some(&live),
+            &bitcoin::p2p::message_blockdata::GetBlocksMessage::new(over, stop),
+        ))
+        .unwrap();
+        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
+    }
+
+    /// The chain locator is the tip. The error fallback would append zeros.
+    #[test]
+    fn peer_wire_locator_is_the_tip() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("locator-tip");
+        hub.ensure_genesis().expect("genesis");
+        let tip = hub.tip_hash().expect("tip");
+        assert_eq!(tip_follow_locator(&hub), vec![tip]);
+    }
+
+    fn saw_notfound(rx: &mut tokio::sync::mpsc::UnboundedReceiver<PeerOut>) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(PeerOut::Msg(NetworkMessage::NotFound(_))) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// A block-relay peer is not told that a transaction is missing.
+    #[test]
+    fn peer_relay_block_only_skips_tx() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("relay-block");
+        let pool_dir = dir.path().join("pool");
+        std::fs::create_dir_all(&pool_dir).expect("pool dir");
+        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
+            &pool_dir,
+            hub.query.clone(),
+            400_000,
+            false,
+        )
+        .expect("mempool");
+        if hub.attach_mempool(mp).is_err() {
+            panic!("attach");
+        }
+        let (_peers, live) = peer(PeerConnType::BlockRelay);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        follow.getdata_tail.push_back(Inventory::WitnessTransaction(
+            bitcoin::Txid::from_byte_array([4; 32]),
+        ));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(serve_getdata_tail(&hub, &tx, &mut follow, Some(&live)))
+            .unwrap();
+        assert!(!saw_notfound(&mut rx));
+    }
+
+    /// MSG_FILTERED_BLOCK is misbehavior while NODE_BLOOM is off.
+    #[test]
+    fn peer_relay_filtered_block_misbehaves() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("relay-bloom");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        follow.getdata_tail.push_back(Inventory::Unknown {
+            inv_type: 3,
+            hash: [0; 32],
+        });
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(serve_getdata_tail(&hub, &tx, &mut follow, Some(&live)))
+            .unwrap();
+        assert!(follow.ban_score >= BAN_SCORE_THRESHOLD);
+    }
+
+    /// No mempool means a missing transaction stays quiet.
+    #[test]
+    fn peer_relay_missing_tx_stays_quiet() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("relay-quiet");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        follow.getdata_tail.push_back(Inventory::WitnessTransaction(
+            bitcoin::Txid::from_byte_array([5; 32]),
+        ));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(serve_getdata_tail(&hub, &tx, &mut follow, Some(&live)))
+            .unwrap();
+        assert!(!saw_notfound(&mut rx));
+    }
+
+    /// An inv is not queued for a transaction the pool does not have.
+    #[test]
+    fn peer_relay_announce_needs_the_tx() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("relay-ann");
+        let pool_dir = dir.path().join("pool");
+        std::fs::create_dir_all(&pool_dir).expect("pool dir");
+        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
+            &pool_dir,
+            hub.query.clone(),
+            400_000,
+            false,
+        )
+        .expect("mempool");
+        mp.set_relay_enabled(true);
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let txid = bitcoin::Txid::from_byte_array([6; 32]);
+        assert!(!tx_announce_should_queue(Some(&live), &mp, &txid));
+    }
+
+    fn saw_getdata(rx: &mut tokio::sync::mpsc::UnboundedReceiver<PeerOut>) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(PeerOut::Msg(NetworkMessage::GetData(_))) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// IBD keeps transaction relay off even when the pool would relay.
+    #[test]
+    fn peer_inv_during_ibd_does_not_fetch_a_tx() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("inv-ibd");
+        assert!(hub.in_ibd());
+        let pool_dir = dir.path().join("pool");
+        std::fs::create_dir_all(&pool_dir).expect("pool dir");
+        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
+            &pool_dir,
+            hub.query.clone(),
+            400_000,
+            false,
+        )
+        .expect("mempool");
+        mp.set_relay_enabled(true);
+        if hub.attach_mempool(mp).is_err() {
+            panic!("attach");
+        }
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        on_inv(
+            &hub,
+            &tx,
+            &mut follow,
+            Some(&live),
+            &[Inventory::Transaction(bitcoin::Txid::from_byte_array(
+                [7; 32],
+            ))],
+        )
+        .unwrap();
+        assert!(!saw_getdata(&mut rx));
+        assert_eq!(follow.ban_score, 0);
+    }
+
+    /// A block already held as a pending header is not a new header walk.
+    #[test]
+    fn peer_inv_pending_header_needs_no_headers() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("inv-pend");
+        let hash = BlockHash::from_byte_array([9; 32]);
+        let mut follow = PeerFollowState::new();
+        follow.pending_headers.insert(
+            hash,
+            bitcoin::block::Header {
+                version: bitcoin::block::Version::ONE,
+                prev_blockhash: BlockHash::all_zeros(),
+                merkle_root: bitcoin::TxMerkleNode::from_byte_array([0; 32]),
+                time: 0,
+                bits: bitcoin::CompactTarget::from_consensus(0x207f_ffff),
+                nonce: 0,
+            },
+        );
+        assert!(!on_inv_block_needs_headers(&hub, &follow, None, &hash));
+    }
+
+    fn held_stop(hub: &crate::chain::ChainHub) -> BlockHash {
+        let header = bitcoin::block::Header {
+            version: bitcoin::block::Version::ONE,
+            prev_blockhash: BlockHash::from_byte_array([1; 32]),
+            merkle_root: bitcoin::TxMerkleNode::from_byte_array([3; 32]),
+            time: 1,
+            bits: bitcoin::CompactTarget::from_consensus(0x207f_ffff),
+            nonce: 1,
+        };
+        let hash = header.block_hash();
+        hub.hold_unconnected_body(bitcoin::Block {
+            header,
+            txdata: Vec::new(),
+        });
+        hash
+    }
+
+    fn getheaders(
+        locator: Vec<BlockHash>,
+        stop: BlockHash,
+    ) -> bitcoin::p2p::message_blockdata::GetHeadersMessage {
+        bitcoin::p2p::message_blockdata::GetHeadersMessage::new(locator, stop)
+    }
+
+    /// A stale stop is withheld only when every clause holds. A zero stop,
+    /// or a locator, is not that withhold.
+    #[test]
+    fn peer_headers_withhold_is_a_stale_stop() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("gh-withhold");
+        let stop = held_stop(&hub);
+        assert!(hub.header_of(&stop).is_some(), "the held header is visible");
+        assert!(!hub.stale_relay_allowed(&stop));
+        let (headers, withhold, _) = getheaders_apply(&hub, &getheaders(Vec::new(), stop)).unwrap();
+        assert!(headers.is_empty());
+        assert!(withhold, "a held header that is not relayable is withheld");
+        let (zero_headers, zero_stop, _) =
+            getheaders_apply(&hub, &getheaders(Vec::new(), BlockHash::all_zeros())).unwrap();
+        assert!(zero_headers.is_empty());
+        assert!(!zero_stop, "a zero stop is not a withhold");
+        let (_located, with_locator, _) = getheaders_apply(
+            &hub,
+            &getheaders(vec![BlockHash::from_byte_array([4; 32])], stop),
+        )
+        .unwrap();
+        assert!(!with_locator, "a locator is not the stale-stop withhold");
+    }
+
+    fn mine_to(hub: &crate::chain::ChainHub, height: u32) {
+        let spk = bitcoin::script::ScriptBuf::from_bytes(vec![0x51]);
+        while hub.tip_height().unwrap_or(0) < height {
+            let prev = hub.tip_hash().expect("tip");
+            let time = hub.tip_header().expect("tip header").time.saturating_add(1);
+            let next = hub.tip_height().expect("height").saturating_add(1);
+            let block =
+                rbitcoin_consensus::mine_regtest_paying(prev, time, next, spk.clone(), vec![]);
+            hub.accept_block(block).expect("extend");
+        }
+    }
+
+    /// Genesis is not an unknown parent. A block at the tip is not low work.
+    /// Once the tip is far ahead, the old height-1 block is.
+    #[test]
+    fn peer_block_unrequested_skip_keeps_genesis_and_low_work() {
+        let genesis = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest);
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("skip-block");
+        let mut follow = PeerFollowState::new();
+        let skipped =
+            on_block_unrequested_skip(&hub, &mut follow, None, &genesis, genesis.block_hash())
+                .unwrap();
+        assert!(!skipped, "genesis is not an unrequested skip");
+        assert_eq!(follow.ban_score, 0);
+        hub.ensure_genesis().expect("genesis");
+        mine_to(&hub, 1);
+        let child = hub.block_at_height(1).unwrap().expect("height 1");
+        let mut follow = PeerFollowState::new();
+        let skipped =
+            on_block_unrequested_skip(&hub, &mut follow, None, &child, child.block_hash()).unwrap();
+        assert!(!skipped, "the tip child is not below the anti-DoS work");
+        mine_to(&hub, 147);
+        let old = hub.block_at_height(1).unwrap().expect("height 1");
+        let mut follow = PeerFollowState::new();
+        let skipped =
+            on_block_unrequested_skip(&hub, &mut follow, None, &old, old.block_hash()).unwrap();
+        assert!(skipped, "height 1 is low work once the tip is far ahead");
+    }
+
+    fn saw_inv(rx: &mut tokio::sync::mpsc::UnboundedReceiver<PeerOut>) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(PeerOut::Msg(NetworkMessage::Inv(_))) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// A compact tip with headers off does not also send an inv.
+    #[test]
+    fn peer_tip_compact_without_headers_sends_no_inv() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("tip-cmpct");
+        hub.ensure_genesis().expect("genesis");
+        let hash = hub.tip_hash().expect("tip");
+        let header = hub.tip_header().expect("header");
+        let ev = crate::chain::TipEvent {
+            height: hub.tip_height().expect("height"),
+            hash,
+            header,
+            reorg_branch_len: 0,
+        };
+        let mut follow = PeerFollowState::new();
+        follow.send_cmpct = true;
+        follow.cmpct_version = 2;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(on_tip_event(&hub, &tx, &mut follow, None, Ok(ev)))
+            .unwrap();
+        assert!(
+            !saw_inv(&mut rx),
+            "compact announce is the only tip message"
+        );
+    }
+
+    /// A drained genesis block with a clear score is not a disconnect.
+    #[test]
+    fn peer_decode_drain_without_misbehavior_stays_ok() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("dec-drain");
+        let mut q = DecodeQueue::new();
+        let magic = bitcoin::p2p::Magic::from(bitcoin::Network::Regtest);
+        let genesis = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest);
+        let raw =
+            bitcoin::p2p::message::RawNetworkMessage::new(magic, NetworkMessage::Block(genesis));
+        q.push_front_ready(Ok(raw), 24, true);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        let mut since = None;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(apply_queued_decodes(
+            &mut q,
+            &hub,
+            &tx,
+            &mut follow,
+            None,
+            &mut since,
+            "peer",
+        ))
+        .expect("a clear score stays connected");
+    }
+
+    /// A tip this peer already sent is still recorded when the offer was skipped.
+    #[test]
+    fn peer_tip_unsent_records_a_skipped_offer() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("tip-unsent");
+        hub.ensure_genesis().expect("genesis");
+        let tip = hub.tip_hash().expect("tip");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        live.note_block_from_peer(tip);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(announce_unsent_tip(
+            &hub,
+            &tx,
+            &mut follow,
+            Some(&live),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(live.last_tip_offered(), Some(tip));
+    }
+
+    /// A tip event for the current tip keeps its reorg length.
+    #[test]
+    fn peer_tip_event_keeps_a_long_reorg() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("tip-reorg-len");
+        hub.ensure_genesis().expect("genesis");
+        let hash = hub.tip_hash().expect("tip");
+        let header = hub.tip_header().expect("header");
+        let ev = crate::chain::TipEvent {
+            height: hub.tip_height().expect("height"),
+            hash,
+            header,
+            reorg_branch_len: MAX_BLOCKS_TO_ANNOUNCE + 1,
+        };
+        let got = tip_event_for_announce(Ok(ev), &hub);
+        let super::TipRecvAnnounce::Announce(got) = got else {
+            panic!("the current tip is announced");
+        };
+        assert!(got.reorg_branch_len > MAX_BLOCKS_TO_ANNOUNCE);
+    }
+
+    fn pow_header(
+        hub: &crate::chain::ChainHub,
+        prev: BlockHash,
+        time: u32,
+    ) -> bitcoin::block::Header {
+        let mut header = bitcoin::block::Header {
+            version: bitcoin::block::Version::from_consensus(4),
+            prev_blockhash: prev,
+            merkle_root: bitcoin::TxMerkleNode::from_byte_array([8; 32]),
+            time,
+            bits: bitcoin::CompactTarget::from_consensus(0x207f_ffff),
+            nonce: 0,
+        };
+        for nonce in 0..1_000_000u32 {
+            header.nonce = nonce;
+            if hub.header_claimed_pow_ok(&header) {
+                return header;
+            }
+        }
+        panic!("regtest header");
+    }
+
+    /// A month-old side header with only a staged body is withheld, not missing.
+    #[test]
+    fn peer_serve_stale_staged_body_is_withheld() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("serve-stale");
+        hub.ensure_genesis().expect("genesis");
+        let genesis = hub.tip_hash().expect("genesis");
+        let gtime = hub.tip_header().expect("genesis header").time;
+        let spk = bitcoin::script::ScriptBuf::from_bytes(vec![0x51]);
+        let far = gtime.saturating_add(31 * 24 * 60 * 60);
+        let main = rbitcoin_consensus::mine_regtest_paying(genesis, far, 1, spk, vec![]);
+        hub.accept_block(main).expect("advance the tip");
+        let side = pow_header(&hub, genesis, gtime.saturating_add(1));
+        let hash = side.block_hash();
+        let side_time = side.time;
+        hub.ensure_header(&side).expect("side header");
+        hub.cache.stage_servable(bitcoin::Block {
+            header: side,
+            txdata: Vec::new(),
+        });
+        assert!(
+            !hub.cache.has_body(&hash),
+            "staged body is not a stored body"
+        );
+        assert!(hub.cache.has_servable(&hash), "staged");
+        assert!(
+            !hub.query
+                .is_block_archived(&hash.to_byte_array())
+                .expect("archive"),
+            "header-only is not archived"
+        );
+        let stored = hub
+            .query
+            .get_header_by_hash(&hash.to_byte_array())
+            .expect("header read");
+        assert!(stored.is_some(), "side header is stored");
+        let height = hub
+            .query
+            .height_of_hash(&hash.to_byte_array())
+            .expect("height");
+        assert!(height.is_none(), "fork height {height:?}");
+        let tip_time = hub.tip_header().expect("tip header").time;
+        assert!(
+            u64::from(tip_time).saturating_sub(u64::from(side_time))
+                >= crate::chain::STALE_RELAY_AGE_LIMIT_SECS,
+            "tip {tip_time} side {side_time}"
+        );
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let served = rt
+            .block_on(serve_getdata_full_block(&hub, &tx, None, &hash, false))
+            .expect("serve");
+        assert_eq!(served, FullBlockReply::Withheld);
+    }
+
+    /// A confirmed coinbase is still announced when the peer's filter is above
+    /// a rate we do not have. An inbound relay peer counts that inv.
+    #[test]
+    fn peer_announce_coinbase_ignores_a_missing_rate() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("ann-cb");
+        hub.ensure_genesis().expect("genesis");
+        let pool_dir = dir.path().join("pool");
+        std::fs::create_dir_all(&pool_dir).expect("pool dir");
+        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
+            &pool_dir,
+            hub.query.clone(),
+            400_000,
+            false,
+        )
+        .expect("mempool");
+        mp.set_relay_enabled(true);
+        let genesis = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest);
+        let txid = genesis.txdata[0].compute_txid();
+        assert!(mp.try_contains(&txid), "the genesis coinbase is at the tip");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        live.note_minfeefilter_sat_kvb(u64::MAX);
+        assert!(tx_announce_should_queue(Some(&live), &mp, &txid));
+        let inn = inbound();
+        tx_announce_maybe_count(Some(&inn), &mp, &txid);
+        assert_eq!(inn.inv_to_send(), 1);
+    }
+
+    fn open_pool(
+        label: &str,
+    ) -> (
+        rbitcoin_query::testutil::TempDir,
+        crate::chain::ChainHub,
+        std::sync::Arc<crate::tx_relay::MempoolHub>,
+    ) {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled(label);
+        let pool_dir = dir.path().join("pool");
+        std::fs::create_dir_all(&pool_dir).expect("pool dir");
+        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
+            &pool_dir,
+            hub.query.clone(),
+            400_000,
+            false,
+        )
+        .expect("mempool");
+        (dir, hub, mp)
+    }
+
+    /// An accept generation equal to the floor is still announced. A local
+    /// unbroadcast tx is not held for the clock, and it is announced while
+    /// node relay is off.
+    #[test]
+    fn peer_tx_inv_candidate_respects_floor_and_local() {
+        let (_dir, _hub, mp) = open_pool("inv-cand");
+        mp.set_relay_enabled(true);
+        let from = crate::peers::CappedSet::new();
+        let txid = bitcoin::Txid::from_byte_array([7; 32]);
+        let w = bitcoin::Wtxid::from_byte_array([9; 32]);
+        mp.insert_relay_maps(txid, w, 1, mp.relay_now_secs(), false);
+        let gen = mp.accept_gen(&w).expect("gen");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        live.set_inv_gen_floor(gen);
+        assert!(tx_inv_candidate_ok(&mp, &live, &from, txid, w, true, false));
+        let local_id = bitcoin::Txid::from_byte_array([8; 32]);
+        let local_w = bitcoin::Wtxid::from_byte_array([10; 32]);
+        mp.note_unbroadcast(local_id);
+        let (_peers, outbound) = peer(PeerConnType::OutboundFullRelay);
+        assert!(!tx_inv_candidate_ok(
+            &mp, &outbound, &from, local_id, local_w, false, false
+        ));
+        mp.set_relay_enabled(false);
+        let off_id = bitcoin::Txid::from_byte_array([6; 32]);
+        let off_w = bitcoin::Wtxid::from_byte_array([11; 32]);
+        mp.note_unbroadcast(off_id);
+        let (_peers, blocks_only) = peer(PeerConnType::OutboundFullRelay);
+        assert!(tx_inv_candidate_ok(
+            &mp,
+            &blocks_only,
+            &from,
+            off_id,
+            off_w,
+            false,
+            false
+        ));
+    }
+
+    fn wtx_invs(rx: &mut tokio::sync::mpsc::UnboundedReceiver<PeerOut>) -> Vec<bitcoin::Wtxid> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            let PeerOut::Msg(NetworkMessage::Inv(items)) = msg else {
+                continue;
+            };
+            for item in items {
+                let Inventory::WTx(w) = item else {
+                    panic!("tx inv is a wtxid");
+                };
+                out.push(w);
+            }
+        }
+        out
+    }
+
+    fn spend_height(hub: &crate::chain::ChainHub, height: u32) -> bitcoin::Transaction {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::transaction::Version as TxVersion;
+        use bitcoin::{Amount, OutPoint, Sequence, TxIn, TxOut, Witness};
+        let coinbase = hub
+            .query
+            .reconstruct_block_at_height(rbitcoin_primitives::Height(height))
+            .expect("coinbase")
+            .txdata[0]
+            .compute_txid();
+        bitcoin::Transaction {
+            version: TxVersion::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: coinbase,
+                    vout: 0,
+                },
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(49_9999_0000),
+                script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51]),
+            }],
+        }
+    }
+
+    /// Relay-off still announces a local unbroadcast tx. An aged tx is
+    /// announced without a clock tick. Inv'ing a later tx makes an older one
+    /// servable.
+    #[test]
+    fn peer_tx_inv_queue_announces_due_work() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("inv-queue");
+        hub.ensure_genesis().expect("genesis");
+        hub.confirm_empty_regtest(101).expect("mature coinbase");
+        let pool_dir = dir.path().join("pool");
+        std::fs::create_dir_all(&pool_dir).expect("pool dir");
+        let mp = crate::tx_relay::MempoolHub::open_with_weight_persist(
+            &pool_dir,
+            hub.query.clone(),
+            400_000,
+            false,
+        )
+        .expect("mempool");
+        mp.set_relay_enabled(false);
+        let now = 1_700_000_000u64;
+        mp.note_mock_now(now);
+        if hub.attach_mempool(std::sync::Arc::clone(&mp)).is_err() {
+            panic!("attach");
+        }
+        let older_tx = spend_height(&hub, 1);
+        let older = older_tx.compute_txid();
+        let older_w = older_tx.compute_wtxid();
+        mp.accept_tx(&older_tx).expect("older");
+        mp.note_unbroadcast(older);
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_peers, local) = peer(PeerConnType::OutboundFullRelay);
+        queue_due_tx_invs(&hub, &local, &crate::peers::CappedSet::new(), &out_tx);
+        assert_eq!(
+            wtx_invs(&mut out_rx),
+            vec![older_w],
+            "relay off still announces the unbroadcast tx"
+        );
+
+        mp.set_relay_enabled(true);
+        mp.note_mock_now(now + 30);
+        let (_peers, aged) = peer(PeerConnType::OutboundFullRelay);
+        queue_due_tx_invs(&hub, &aged, &crate::peers::CappedSet::new(), &out_tx);
+        assert_eq!(
+            wtx_invs(&mut out_rx),
+            vec![older_w],
+            "an aged tx is announced without a clock tick"
+        );
+
+        let newer_tx = spend_height(&hub, 2);
+        let newer_w = newer_tx.compute_wtxid();
+        mp.accept_tx(&newer_tx).expect("newer");
+        let mut from = crate::peers::CappedSet::new();
+        from.insert(older, 8);
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        live.request_tx_inv();
+        queue_due_tx_invs(&hub, &live, &from, &out_tx);
+        assert_eq!(
+            wtx_invs(&mut out_rx),
+            vec![newer_w],
+            "the tx this peer sent is not inv'd back"
+        );
+        let (serve_tx, mut serve_rx) = tokio::sync::mpsc::unbounded_channel();
+        let served =
+            serve_mempool_getdata(&hub, &serve_tx, Some(&live), Some(older_tx)).expect("getdata");
+        assert!(
+            served,
+            "an older tx becomes servable once a later one is inv'd"
+        );
+        match serve_rx.try_recv() {
+            Ok(PeerOut::Msg(NetworkMessage::Tx(tx))) => assert_eq!(tx.compute_txid(), older),
+            other => panic!("served the older tx, got {other:?}"),
+        }
+    }
+
+    fn cmpct_of(block: &bitcoin::Block) -> bitcoin::p2p::message_compact_blocks::CmpctBlock {
+        bitcoin::p2p::message_compact_blocks::CmpctBlock {
+            compact_block: bitcoin::bip152::HeaderAndShortIds::from_block(block, 1, 2, &[])
+                .expect("compact"),
+        }
+    }
+
+    fn push_cmpct(
+        hub: &crate::chain::ChainHub,
+        live: &crate::peers::LivePeer,
+        block: &bitcoin::Block,
+    ) -> Vec<NetworkMessage> {
+        let mut follow = PeerFollowState::new();
+        follow.cmpct_version = 2;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(on_cmpctblock(
+            hub,
+            &tx,
+            &mut follow,
+            Some(live),
+            &cmpct_of(block),
+        ))
+        .expect("compact");
+        let mut msgs = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            if let PeerOut::Msg(msg) = item {
+                msgs.push(msg);
+            }
+        }
+        msgs
+    }
+
+    /// A heavier compact header is stamped. An equal-work sibling is not.
+    /// A deep-chain compact child of genesis is ignored.
+    #[test]
+    fn peer_cmpct_stamps_heavier_and_ignores_low_work() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("cmpct-stamp");
+        hub.ensure_genesis().expect("genesis");
+        hub.confirm_empty_regtest(160).expect("deep tip");
+        let tip = hub.tip_header().expect("tip");
+        let spk = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let heavier = rbitcoin_consensus::mine_regtest_paying(
+            tip.block_hash(),
+            tip.time.saturating_add(1),
+            161,
+            spk.clone(),
+            vec![],
+        );
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let _ = push_cmpct(&hub, &live, &heavier);
+        assert_eq!(
+            live.last_block_announcement
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1_000,
+            "a heavier compact header is stamped"
+        );
+        let sibling = rbitcoin_consensus::mine_regtest_paying(
+            tip.prev_blockhash,
+            tip.time.saturating_add(1),
+            160,
+            spk.clone(),
+            vec![],
+        );
+        assert!(
+            !header_is_stored(&hub, &sibling.block_hash()),
+            "the equal-work sibling is a new header"
+        );
+        let (_peers, side) = peer(PeerConnType::OutboundFullRelay);
+        let _ = push_cmpct(&hub, &side, &sibling);
+        assert!(
+            header_is_stored(&hub, &sibling.block_hash()),
+            "equal-work sibling header is stored"
+        );
+        assert_eq!(
+            side.last_block_announcement
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "an equal-work sibling is not stamped"
+        );
+        let (_peers, again) = peer(PeerConnType::OutboundFullRelay);
+        let _ = push_cmpct(&hub, &again, &heavier);
+        assert_eq!(
+            again
+                .last_block_announcement
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a header we already have is not stamped again"
+        );
+        let genesis = hub
+            .query
+            .wire_header_at_height(rbitcoin_primitives::Height(0))
+            .expect("genesis header");
+        let low = rbitcoin_consensus::mine_regtest_paying(
+            genesis.block_hash(),
+            genesis.time.saturating_add(1),
+            1,
+            spk,
+            vec![],
+        );
+        let (_peers, deep) = peer(PeerConnType::OutboundFullRelay);
+        assert!(
+            hub.header_below_anti_dos(&low.header),
+            "the genesis child is below the anti-dos line"
+        );
+        let msgs = push_cmpct(&hub, &deep, &low);
+        assert!(
+            msgs.is_empty(),
+            "a low-work compact block is ignored, got {msgs:?}"
+        );
+        assert!(
+            !header_is_stored(&hub, &low.block_hash()),
+            "an ignored low-work compact header is not stored"
+        );
+        assert_eq!(
+            deep.last_block_announcement
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        let _ = std::fs::remove_dir_all(dir.path());
+    }
+
+    /// A compact block with a short id and no mempool is not a `blocktxn` ask.
+    #[test]
+    fn peer_cmpct_partial_without_mempool_is_not_a_txn_ask() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("cmpct-partial");
+        hub.ensure_genesis().expect("genesis");
+        hub.confirm_empty_regtest(101).expect("mature");
+        let tip = hub.tip_header().expect("tip");
+        let spk = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let spend = spend_height(&hub, 1);
+        let block = rbitcoin_consensus::mine_regtest_paying(
+            tip.block_hash(),
+            tip.time.saturating_add(1),
+            102,
+            spk,
+            vec![spend],
+        );
+        let hsi = bitcoin::bip152::HeaderAndShortIds::from_block(&block, 1, 2, &[0]).expect("hsi");
+        assert_eq!(hsi.short_ids.len(), 1, "the spend stays a short id");
+        assert!(
+            reconstruct_cmpct_from_mempool(None, &hsi, 2).is_none(),
+            "no mempool does not turn a partial reconstruct into blocktxn"
+        );
+        let _ = std::fs::remove_dir_all(dir.path());
+    }
+
+    /// A body already on hand is not asked again when the header path is retargeted.
+    #[test]
+    fn peer_header_retarget_skips_a_body_we_have() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("retarget-have");
+        hub.ensure_genesis().expect("genesis");
+        hub.confirm_empty_regtest(1).expect("tip");
+        let tip = hub.tip_header().expect("tip header");
+        let spk = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let block = rbitcoin_consensus::mine_regtest_paying(
+            tip.block_hash(),
+            tip.time.saturating_add(1),
+            2,
+            spk,
+            vec![],
+        );
+        let hash = block.block_hash();
+        let mut pending = std::collections::HashMap::new();
+        pending.insert(hash, block.header);
+        let mut apply = super::HeadersApply {
+            from_peer: Vec::new(),
+            best_known: Vec::new(),
+            admits: Vec::new(),
+            evicts: Vec::new(),
+            misbehave: false,
+            disconnect: None,
+            sync_height: None,
+            ignore_height: None,
+            drop_asks: Vec::new(),
+            want_bodies: Vec::new(),
+            getheaders: None,
+            headers_len: 0,
+            peer_below_floor: false,
+            stamp_block_announcement: false,
+            answers_getheaders: false,
+        };
+        let requested = std::collections::HashSet::new();
+        super::retarget_stored_header_asks(
+            &hub,
+            &mut apply,
+            &pending,
+            hash,
+            &requested,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(
+            apply.want_bodies,
+            vec![hash],
+            "the new header's body is wanted"
+        );
+        let mut have = std::collections::HashSet::new();
+        have.insert(hash);
+        apply.want_bodies.clear();
+        super::retarget_stored_header_asks(&hub, &mut apply, &pending, hash, &requested, &have);
+        assert!(
+            apply.want_bodies.is_empty(),
+            "a body we already have is not asked, got {:?}",
+            apply.want_bodies
+        );
+        let _ = std::fs::remove_dir_all(dir.path());
+    }
+
+    /// The peer who announced the orphan is asked for the missing parent.
+    /// The peer who delivered the orphan is not asked twice.
+    #[test]
+    fn peer_orphan_parent_ask_goes_to_the_other_announcer() {
+        let (_dir, _hub, mp) = open_pool("orphan-ask");
+        let peers = PeerHub::new();
+        peers.set_mock_now(5_000);
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18444);
+        let here = peers.register(
+            addr,
+            addr,
+            &version(),
+            false,
+            PeerConnType::OutboundFullRelay,
+        );
+        let other_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18445);
+        let other = peers.register(
+            other_addr,
+            other_addr,
+            &version(),
+            false,
+            PeerConnType::OutboundFullRelay,
+        );
+        mp.note_inv_tx_requested(other.id, [1; 32], false, 5_000, false);
+        let parent = bitcoin::Txid::from_byte_array([9; 32]);
+        use bitcoin::absolute::LockTime;
+        use bitcoin::transaction::Version as TxVersion;
+        use bitcoin::{Amount, OutPoint, Sequence, TxIn, TxOut, Witness};
+        let tx = bitcoin::Transaction {
+            version: TxVersion::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: parent,
+                    vout: 0,
+                },
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1000),
+                script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51]),
+            }],
+        };
+        schedule_orphan_parent_getdata(&mp, &tx, Some(here.as_ref()), &[other.id]);
+        let anns = mp.announcer_peers_for(&parent, &tx.compute_wtxid());
+        assert!(
+            anns.contains(&other.id),
+            "the other announcer is asked for the missing parent, got {anns:?}"
+        );
+    }
+
+    fn asked(hub: &crate::chain::ChainHub, hash: &BlockHash) -> bool {
+        hub.asked_blocks.read().unwrap().contains(hash)
+    }
+
+    fn saw_getheaders(rx: &mut tokio::sync::mpsc::UnboundedReceiver<PeerOut>) -> bool {
+        let mut saw = false;
+        while let Ok(item) = rx.try_recv() {
+            if let PeerOut::Msg(NetworkMessage::GetHeaders(_)) = item {
+                saw = true;
+            }
+        }
+        saw
+    }
+
+    /// Accept outcomes for one compact fill and one full block. An `Ok`
+    /// releases the body ask. A missing store row keeps it. A real store
+    /// fault releases it. Headers are asked only when the previous header
+    /// is unknown.
+    #[test]
+    fn peer_wire_session_pin_accept_ask() {
+        let (dir, hub) = crate::chain::tiny_regtest_hub_labeled("accept-ask");
+        hub.ensure_genesis().expect("genesis");
+        let tip = hub.tip_header().expect("tip");
+        let block = rbitcoin_consensus::mine_regtest_paying(
+            tip.block_hash(),
+            tip.time.saturating_add(1),
+            1,
+            bitcoin::ScriptBuf::from_bytes(vec![0x51]),
+            vec![],
+        );
+        let hash = block.block_hash();
+        let hsi = bitcoin::bip152::HeaderAndShortIds::from_block(&block, 1, 2, &[]).expect("hsi");
+        let mut follow = PeerFollowState::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        hub.note_asked_block(hash);
+        apply_cmpct_accept(
+            &hub,
+            &tx,
+            &mut follow,
+            None,
+            &hsi,
+            hash,
+            block.clone(),
+            Ok(crate::chain::AcceptOutcome::AlreadyHave),
+        );
+        assert!(
+            !asked(&hub, &hash),
+            "an already-have compact block releases the ask"
+        );
+        assert!(
+            !saw_getheaders(&mut rx),
+            "an Ok compact result asks no headers"
+        );
+        hub.note_asked_block(hash);
+        apply_cmpct_accept(
+            &hub,
+            &tx,
+            &mut follow,
+            None,
+            &hsi,
+            hash,
+            block.clone(),
+            Err(crate::error::NetError::Store("record not found".into())),
+        );
+        assert!(
+            asked(&hub, &hash),
+            "a missing store row keeps the compact ask"
+        );
+        assert!(
+            !saw_getheaders(&mut rx),
+            "a known previous header is not re-asked"
+        );
+        let mut unknown = hsi.header;
+        unknown.prev_blockhash = BlockHash::from_byte_array([7; 32]);
+        let unknown_hsi = bitcoin::bip152::HeaderAndShortIds {
+            header: unknown,
+            nonce: 0,
+            short_ids: vec![],
+            prefilled_txs: vec![],
+        };
+        apply_cmpct_accept(
+            &hub,
+            &tx,
+            &mut follow,
+            None,
+            &unknown_hsi,
+            hash,
+            block.clone(),
+            Err(crate::error::NetError::Consensus("bad-blk".into())),
+        );
+        assert!(
+            saw_getheaders(&mut rx),
+            "an unknown previous header asks for headers"
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        hub.note_asked_block(hash);
+        rt.block_on(finish_block_accept(
+            &hub,
+            &tx,
+            &mut follow,
+            None,
+            &block,
+            hash,
+            Err(crate::error::NetError::Store("record not found".into())),
+        ))
+        .expect("not found");
+        assert!(
+            asked(&hub, &hash),
+            "a missing store row keeps the block ask"
+        );
+        rt.block_on(finish_block_accept(
+            &hub,
+            &tx,
+            &mut follow,
+            None,
+            &block,
+            hash,
+            Err(crate::error::NetError::Store("io: disk".into())),
+        ))
+        .expect("disk");
+        assert!(
+            !asked(&hub, &hash),
+            "a store fault other than a missing row releases the ask"
+        );
+        let _ = std::fs::remove_dir_all(dir.path());
+    }
+
+    /// `read_frame` takes the payload off the BIP324 stream.
+    #[test]
+    fn peer_wire_session_pin_read_frame() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let magic = bitcoin::p2p::Magic::from(bitcoin::Network::Regtest);
+            let listener = crate::listen::bind_tcp("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (go, wrote) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (sock, _) = listener.accept().await.unwrap();
+                let (_reader, mut writer, _, _) =
+                    crate::v2::open_v2(sock, magic, true).await.unwrap();
+                crate::v2::write_v2_contents(&mut writer, b"one-frame".to_vec())
+                    .await
+                    .unwrap();
+                let _ = go.send(());
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            });
+            let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let mut sess = super::V2PlainSession::outbound_bip324(sock).await.unwrap();
+            wrote.await.unwrap();
+            sess.read_frame().await.expect("frame");
+            let again =
+                tokio::time::timeout(std::time::Duration::from_millis(400), sess.read_contents())
+                    .await;
+            assert!(
+                again.is_err(),
+                "read_frame already took the only payload, got {again:?}"
+            );
+            server.abort();
+        });
+    }
+
+    /// A magic-prefixed ellswift key on a session that is already stopping
+    /// returns at once. It does not park until the handshake deadline.
+    #[test]
+    fn peer_wire_session_pin_stopped_ellswift() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let magic = bitcoin::p2p::Magic::from(bitcoin::Network::Regtest);
+            let listener = crate::listen::bind_tcp("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let peers = PeerHub::new();
+            peers.set_peer_timeout_secs(2);
+            let peers_task = std::sync::Arc::clone(&peers);
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let our = stream.local_addr().unwrap();
+                let their = stream.peer_addr().unwrap();
+                inbound_connect_and_handshake(
+                    stream,
+                    magic,
+                    our,
+                    their,
+                    0,
+                    "/rbitcoin:test/",
+                    &peers_task,
+                    our,
+                )
+                .await
+            });
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let sess = loop {
+                if let Some(s) = peers.live_peers().into_iter().next() {
+                    break s;
+                }
+                if std::time::Instant::now() > deadline {
+                    panic!("connecting session was not registered");
+                }
+                tokio::task::yield_now().await;
+            };
+            sess.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let started = std::time::Instant::now();
+            let mut key = [0u8; 64];
+            key[..4].copy_from_slice(&magic.to_bytes());
+            use tokio::io::AsyncWriteExt;
+            client.write_all(&key).await.unwrap();
+            let joined = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+                .await
+                .expect("handshake task")
+                .unwrap();
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_millis(900),
+                "a stopped session must not park on ellswift, elapsed {elapsed:?}"
+            );
+            match joined {
+                Err(crate::error::NetError::Timeout) => {}
+                Err(e) => panic!("ellswift on a stopped session is a timeout, got {e}"),
+                Ok(_) => panic!("ellswift on a stopped session must not finish the handshake"),
+            }
+        });
+    }
+
+    fn frame_for(msg: NetworkMessage) -> crate::codec::FramedMessage {
+        let magic = bitcoin::p2p::Magic::from(bitcoin::Network::Regtest);
+        let raw = bitcoin::p2p::message::RawNetworkMessage::new(magic, msg);
+        let full = bitcoin::consensus::encode::serialize(&raw);
+        let command: [u8; 12] = full[4..16].try_into().unwrap();
+        crate::codec::FramedMessage {
+            magic,
+            command,
+            payload: full[24..].to_vec(),
+        }
+    }
+
+    struct Queued(std::collections::VecDeque<crate::codec::FramedMessage>);
+
+    impl crate::v1::FrameRead for Queued {
+        fn read_frame(
+            &mut self,
+            _magic: bitcoin::p2p::Magic,
+        ) -> impl std::future::Future<
+            Output = Result<crate::codec::FramedMessage, crate::error::NetError>,
+        > + Send {
+            let next = self.0.pop_front();
+            async move { next.ok_or(crate::error::NetError::Protocol("eof")) }
+        }
+    }
+
+    fn version_at(v: u32) -> VersionMessage {
+        let mut msg = version();
+        msg.version = v;
+        msg
+    }
+
+    /// 31800 is the oldest version we speak. One below is obsolete.
+    #[test]
+    fn peer_hs_min_version_is_accepted() {
+        let magic = bitcoin::p2p::Magic::from(bitcoin::Network::Regtest);
+        let policy = HandshakePolicy::plain();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut ok = Queued(
+            vec![frame_for(NetworkMessage::Version(version_at(
+                MIN_PEER_PROTO_VERSION as u32,
+            )))]
+            .into(),
+        );
+        let got = rt
+            .block_on(read_peer_version(&mut ok, magic, &policy))
+            .expect("minimum version");
+        assert_eq!(got.version, MIN_PEER_PROTO_VERSION as u32);
+        let mut old = Queued(
+            vec![frame_for(NetworkMessage::Version(version_at(
+                (MIN_PEER_PROTO_VERSION - 1) as u32,
+            )))]
+            .into(),
+        );
+        let err = rt
+            .block_on(read_peer_version(&mut old, magic, &policy))
+            .expect_err("below the minimum");
+        assert!(matches!(
+            err,
+            crate::error::NetError::Protocol("obsolete version")
+        ));
+    }
+
+    /// A wtxid preface before verack still finishes the handshake.
+    #[test]
+    fn peer_hs_wtxid_then_verack_finishes() {
+        let magic = bitcoin::p2p::Magic::from(bitcoin::Network::Regtest);
+        let mut reader = Queued(
+            vec![
+                frame_for(NetworkMessage::WtxidRelay),
+                frame_for(NetworkMessage::Verack),
+            ]
+            .into(),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(wait_peer_verack(
+            &mut reader,
+            magic,
+            &HandshakePolicy::plain(),
+        ))
+        .expect("verack");
+    }
+
+    /// An inbound announcer asks an outbound high-bandwidth peer first.
+    #[test]
+    fn peer_hb_fanout_asks_an_outbound() {
+        for n in 0..24 {
+            let peers = PeerHub::new();
+            peers.set_mock_now(1_000);
+            let open = |inbound: bool, port: u16| {
+                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+                let kind = if inbound {
+                    PeerConnType::Inbound
+                } else {
+                    PeerConnType::OutboundFullRelay
+                };
+                let live = peers.register(addr, addr, &version(), inbound, kind);
+                live.set_hb_to(true);
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                live.attach_out(tx);
+                (live, rx)
+            };
+            let (ann, _) = open(true, 1);
+            let (_out, mut out_rx) = open(false, 2);
+            let _ = open(true, 3);
+            let _ = open(true, 4);
+            ask_other_hb_for_block(Some(&ann), BlockHash::from_byte_array([n as u8; 32]));
+            let asked = std::iter::from_fn(|| out_rx.try_recv().ok())
+                .any(|msg| matches!(msg, PeerOut::Msg(NetworkMessage::GetData(_))));
+            assert!(asked, "outbound high-bandwidth peer is asked");
+        }
+    }
+
+    /// Expiring the last block ask clears the window.
+    #[test]
+    fn peer_hb_last_ask_clears_the_window() {
+        let (_dir, hub) = crate::chain::tiny_regtest_hub_labeled("hb-window");
+        let (_peers, live) = peer(PeerConnType::OutboundFullRelay);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut follow = PeerFollowState::new();
+        follow
+            .requested_blocks
+            .insert(BlockHash::from_byte_array([7; 32]));
+        let mut since = Some(std::time::Instant::now() - BLOCK_GETDATA_TIMEOUT);
+        let mut announces = None;
+        let mut flushes = None;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(on_heartbeat(
+            &hub,
+            &tx,
+            &mut follow,
+            Some(&live),
+            &mut since,
+            &mut announces,
+            &mut flushes,
+            false,
+        ))
+        .unwrap();
+        assert!(follow.requested_blocks.is_empty());
+        assert!(since.is_none());
+    }
 }
 
 /// Core `MaybeDiscourageAndDisconnect`: misbehavior never disconnects or
