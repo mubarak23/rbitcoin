@@ -122,6 +122,16 @@ pub fn tx_status_json_in(query: &Query, tx_fk: Fk, view: &ChainView) -> Result<V
     let Some(height) = query.store().tx_height_get(tx_fk)? else {
         return Ok(json!({ "confirmed": false }));
     };
+    confirmed_status_json_in(query, height, view)
+}
+
+/// The `status` of a tx confirmed-strong at `height` on `view`. It depends
+/// only on the height, so a caller may reuse it for every tx in that block.
+pub fn confirmed_status_json_in(
+    query: &Query,
+    height: u32,
+    view: &ChainView,
+) -> Result<Value, QueryError> {
     let mut out = json!({
         "confirmed": true,
         "block_height": height,

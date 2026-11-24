@@ -1727,6 +1727,92 @@ impl Store {
         Ok(out)
     }
 
+    /// The first spender confirmed-strong as of `tip`, with its fence height,
+    /// for each vout in `start..end` of `out_txid`'s connected create. That
+    /// is `spenders_at(out_txid, vout, tip)[0]` for every vout, but the txid
+    /// is resolved once and the spent slots are read in one batch. Slot `i`
+    /// is vout `start + i`. A vout past the create's outputs, or a txid with
+    /// no connected row, has `None`.
+    pub fn first_strong_spenders_at_range(
+        &self,
+        out_txid: &[u8; 32],
+        start: u32,
+        end: u32,
+        tip: Option<u32>,
+    ) -> Result<Vec<Option<(PointRecord, u32)>>, StoreError> {
+        let mut out = vec![None; end.saturating_sub(start) as usize];
+        if out.is_empty() {
+            return Ok(out);
+        }
+        let Some(create_fk) = self.get_fk_by_txid_tip(out_txid)? else {
+            return Ok(out);
+        };
+        let Some(loc) = self
+            .txs
+            .create_loc_range_batch(&[create_fk])?
+            .into_iter()
+            .next()
+            .flatten()
+        else {
+            return Ok(out);
+        };
+        let vouts: Vec<u32> = (start..end.min(loc.n_out)).collect();
+        let (off, len) = loc.spent;
+        let metas = self.txs.get_output_spender_metas_at(off, len, &vouts)?;
+        // Strong-and-height per spender; a fan-out tx's outputs are often
+        // spent by the same few transactions.
+        let mut strong: crate::U64Map<Option<u32>> = Default::default();
+        let mut strong_height = |fk: Fk| -> Result<Option<u32>, StoreError> {
+            if let Some(&h) = strong.get(&fk.0) {
+                return Ok(h);
+            }
+            let h = if self.is_confirmed_strong_at(fk, tip)? {
+                self.fence().height_of(fk)
+            } else {
+                None
+            };
+            strong.insert(fk.0, h);
+            Ok(h)
+        };
+        for (vout, multi, field, vin) in metas {
+            if field.is_null() {
+                continue;
+            }
+            let mut hit = None;
+            if !multi {
+                if let Some(h) = strong_height(field)? {
+                    hit = Some((field, vin, h));
+                }
+            } else {
+                point_table::for_each_spender_create(
+                    &self.txs,
+                    &self.spenders,
+                    create_fk,
+                    vout,
+                    |spending_tx_fk, spending_vin| {
+                        if let Some(h) = strong_height(spending_tx_fk)? {
+                            hit = Some((spending_tx_fk, spending_vin, h));
+                            return Ok(false);
+                        }
+                        Ok(true)
+                    },
+                )?;
+            }
+            if let Some((spending_tx_fk, spending_vin, h)) = hit {
+                out[(vout - start) as usize] = Some((
+                    PointRecord {
+                        out_txid: *out_txid,
+                        out_index: vout,
+                        spending_tx_fk,
+                        spending_vin,
+                    },
+                    h,
+                ));
+            }
+        }
+        Ok(out)
+    }
+
     /// Spender tx fks for a create outpoint (no `tx.head`; includes non-strong).
     pub fn spenders_create(&self, create_tx_fk: Fk, out_index: u32) -> Result<Vec<Fk>, StoreError> {
         let mut out = Vec::new();

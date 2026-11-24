@@ -380,6 +380,42 @@ async fn outspends_by_txid_outpoint_and_query(sock: &std::path::Path, pad: &Pad)
 
 /// One confirmed coinbase spend with `nout` OP_TRUE outputs. Returns its txid.
 fn mine_fan_tx(pad: &Pad, nout: u32) -> Txid {
+    let spk = ScriptBuf::from_bytes(vec![0x51]);
+    let mut fan = spend_true(pad.cbs[0], 0, spk.clone());
+    fan.output = (0..nout)
+        .map(|_| TxOut {
+            value: Amount::from_sat(10_000),
+            script_pubkey: spk.clone(),
+        })
+        .collect();
+    mine_txs(pad, vec![fan.clone()]);
+    fan.compute_txid()
+}
+
+/// Spend each of `outs` of the OP_TRUE fan `fan` (10,000 sats each) to one
+/// OP_TRUE output, paying `fee`.
+fn spend_fan(fan: Txid, outs: &[u32], fee: u64) -> Transaction {
+    Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: outs
+            .iter()
+            .map(|&vout| TxIn {
+                previous_output: OutPoint { txid: fan, vout },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            })
+            .collect(),
+        output: vec![TxOut {
+            value: Amount::from_sat(10_000 * outs.len() as u64 - fee),
+            script_pubkey: ScriptBuf::from_bytes(vec![0x51]),
+        }],
+    }
+}
+
+/// Mine `txs` in one block on the tip. Returns its height.
+fn mine_txs(pad: &Pad, txs: Vec<Transaction>) -> u32 {
     use bitcoin::hashes::Hash;
     use rbitcoin_consensus::mine_regtest_paying_bits;
 
@@ -392,24 +428,123 @@ fn mine_fan_tx(pad: &Pad, nout: u32) -> Txid {
     let time = rec.timestamp + 600;
     let h = tip_h + 1;
     let bits = rbitcoin_query::expected_next_bits(&pad.q, &params, Height(h), time).unwrap();
-    let spk = ScriptBuf::from_bytes(vec![0x51]);
-    let mut fan = spend_true(pad.cbs[0], 0, spk.clone());
-    fan.output = (0..nout)
-        .map(|_| TxOut {
-            value: Amount::from_sat(10_000),
-            script_pubkey: spk.clone(),
-        })
-        .collect();
     let b = mine_regtest_paying_bits(
         bitcoin::BlockHash::from_byte_array(rec.hash),
         time,
         h,
-        spk,
-        vec![fan.clone()],
+        ScriptBuf::from_bytes(vec![0x51]),
+        txs,
         bits,
     );
     accept_and_connect_block(&pad.q, &params, Height(h), &b, Milestone::NONE).unwrap();
-    fan.compute_txid()
+    h
+}
+
+/// `GET /tx/:txid/outspends` answers at most 10,000 entries. A bigger tx is
+/// 400 without `?start_index=`, and pages with it. Every paged slot is the
+/// `/tx/:txid/outspend/:vout` answer: confirmed spends (two by one tx, one by
+/// another in the same block), a mempool spend, and unspent outputs. `?asof=`
+/// before the spends pages them all unspent.
+#[tokio::test]
+async fn tx_outspends_pages_a_large_fanout() {
+    let pad = pad_hub("outspends-page", 1);
+    let fan_txid = mine_fan_tx(&pad, 10_001);
+    let fan = fan_txid.to_string();
+    let before = pad.q.tip_header_fk().unwrap().unwrap();
+    let before = hex_hash(&pad.q.get_header(before).unwrap().hash);
+    let pair = spend_fan(fan_txid, &[0, 10_000], 1_000);
+    let lone = spend_fan(fan_txid, &[1], 1_000);
+    let h = mine_txs(&pad, vec![pair.clone(), lone.clone()]);
+    let pooled = spend_fan(fan_txid, &[2], 1_000);
+    pad.hub.admit(&pooled).expect("mempool spend");
+
+    let sock_dir = rbitcoin_query::testutil::TempDir::for_socket().expect("temp dir");
+    let (handle, sock) = run_unix(
+        sock_dir.path(),
+        Arc::clone(&pad.q),
+        Some(Arc::clone(&pad.hub)),
+    )
+    .await;
+    let page = |q: String| {
+        let sock = sock.clone();
+        async move {
+            let (st, resp) = http_get_unix(&sock, &q).await;
+            assert_eq!(st, 200, "{q}: {}", &resp[..resp.len().min(200)]);
+            serde_json::from_str::<Vec<Value>>(&resp).unwrap()
+        }
+    };
+
+    let (st, resp) = http_get_unix(&sock, &format!("/tx/{fan}/outspends")).await;
+    assert_eq!(
+        (st, resp.as_str()),
+        (400, "Too many outputs; page with start_index")
+    );
+    let first = page(format!("/tx/{fan}/outspends?start_index=0")).await;
+    let last = page(format!("/tx/{fan}/outspends?start_index=10000")).await;
+    assert_eq!((first.len(), last.len()), (10_000, 1));
+    let mid = page(format!("/tx/{fan}/outspends?start_index=9999")).await;
+    assert_eq!(mid.len(), 2);
+    assert_eq!(mid[1], last[0]);
+
+    let status = &first[0]["status"];
+    assert_eq!(status["confirmed"], true, "{status}");
+    assert_eq!(status["block_height"], h, "{status}");
+    assert_eq!(first[0]["txid"], pair.compute_txid().to_string());
+    assert_eq!((&first[0]["vin"], &last[0]["vin"]), (&json!(0), &json!(1)));
+    assert_eq!(last[0]["txid"], pair.compute_txid().to_string());
+    assert_eq!(first[1]["txid"], lone.compute_txid().to_string());
+    assert_eq!(first[1]["status"], *status);
+    assert_eq!(first[2]["txid"], pooled.compute_txid().to_string());
+    assert_eq!(first[2]["status"], json!({"confirmed": false}));
+    assert_eq!(first[3], json!({"spent": false}));
+    for (vout, slot) in [
+        (0, &first[0]),
+        (1, &first[1]),
+        (2, &first[2]),
+        (3, &first[3]),
+    ]
+    .into_iter()
+    .chain([(10_000, &last[0])])
+    {
+        let (st, one) = http_get_unix(&sock, &format!("/tx/{fan}/outspend/{vout}")).await;
+        assert_eq!(st, 200, "{one}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&one).unwrap(),
+            *slot,
+            "vout {vout}"
+        );
+    }
+
+    let old = page(format!("/tx/{fan}/outspends?start_index=0&asof={before}")).await;
+    assert_eq!(old.len(), 10_000);
+    assert!(old.iter().all(|s| *s == json!({"spent": false})));
+
+    for (q, want) in [
+        ("start_index=10001", 404),
+        ("start_index=-1", 400),
+        ("start_index=x", 400),
+    ] {
+        let (st, resp) = http_get_unix(&sock, &format!("/tx/{fan}/outspends?{q}")).await;
+        assert_eq!(st, want, "{q}: {resp}");
+    }
+    // A tx at the page size still answers whole without `start_index`.
+    let (st, resp) = http_get_unix(&sock, &format!("/tx/{}/outspends", pair.compute_txid())).await;
+    assert_eq!((st, resp.as_str()), (200, r#"[{"spent":false}]"#));
+    let (st, _) = http_get_unix(
+        &sock,
+        &format!("/tx/{}/outspends?start_index=1", pair.compute_txid()),
+    )
+    .await;
+    assert_eq!(st, 404);
+
+    handle.shutdown().await;
+    let _ = pad.dir;
+}
+
+fn hex_hash(h: &[u8; 32]) -> String {
+    let mut r = *h;
+    r.reverse();
+    r.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn repeat_ids(id: &str, n: usize) -> Vec<String> {

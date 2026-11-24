@@ -1,0 +1,3 @@
+Security
+
+- **`GET /tx/:txid/outspends` no longer costs several random reads per output, without limit.** It resolved the txid again and read each output's spender, spender txid and block status separately, for up to ~111,000 outputs in one request. It now resolves the txid once, reads the spent slots in one batch, and reads each spending tx's txid and each block's status once. One response holds at most 10,000 entries: a tx with more outputs is 400 `Too many outputs; page with start_index` unless `?start_index=N` asks for one page (dialect). The bulk outspends routes take the same batched read. ([#1953](https://github.com/rbitcoin-org/rbitcoin/issues/1953))

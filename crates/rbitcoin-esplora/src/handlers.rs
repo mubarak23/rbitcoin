@@ -6,8 +6,8 @@ use crate::server::{
     AppState, AsOf, GbtCache, JoinClient, TxBody,
 };
 use crate::tx_json::{
-    build_tx_json, build_tx_json_from_tx, history_items_to_tx_json, pool_settle, tx_status_json_in,
-    utxo_list_json, vout_fields, Listing,
+    build_tx_json, build_tx_json_from_tx, confirmed_status_json_in, history_items_to_tx_json,
+    pool_settle, tx_status_json_in, utxo_list_json, vout_fields, Listing,
 };
 use axum::body::Bytes;
 use axum::extract::{Path, Query as AxumQuery, State};
@@ -788,11 +788,26 @@ pub async fn tx_outspend(
     .await
 }
 
+/// Most entries one `GET /tx/:txid/outspends` answers. A tx with more outputs
+/// is read a page at a time with `?start_index=`.
+pub const MAX_TX_OUTSPENDS_PAGE: u32 = 10_000;
+
+#[derive(Deserialize)]
+pub struct OutspendsPageQuery {
+    pub start_index: Option<String>,
+}
+
 pub async fn tx_outspends(
     State(st): State<AppState>,
     Path(txid_hex): Path<String>,
     AsOf(asof): AsOf,
+    AxumQuery(page): AxumQuery<OutspendsPageQuery>,
 ) -> Response {
+    let start = match page.start_index.as_deref().map(str::parse::<u32>) {
+        None => None,
+        Some(Ok(n)) => Some(n),
+        Some(Err(_)) => return (StatusCode::BAD_REQUEST, "invalid start_index").into_response(),
+    };
     spawn_join(move || {
         let Ok(txid) = parse_hash32(&txid_hex) else {
             return not_found();
@@ -825,6 +840,10 @@ pub async fn tx_outspends(
             };
             tx.output.len() as u32
         };
+        let (first, end) = match outspends_page(start, nout) {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
         let view = match pin_or_reject(&st.query, ChainViewKind::Tip, asof) {
             Ok(v) => v,
             Err(r) => return r,
@@ -835,7 +854,9 @@ pub async fn tx_outspends(
             None
         };
         let mut body = Vec::new();
-        if let Err(e) = write_outspends(&mut body, &st.query, mp, &txid, nout, view.as_ref()) {
+        if let Err(e) =
+            write_outspends_range(&mut body, &st.query, mp, &txid, first, end, view.as_ref())
+        {
             return store_err(e);
         }
         maybe_attach_view(crate::server::json_bytes_reply(body), view)
@@ -857,6 +878,27 @@ pub fn confirmed_output_count(query: &Query, fk: Fk) -> Result<u32, StoreError> 
         .ok_or(StoreError::NotFound)
 }
 
+/// The vouts `first..end` one `/tx/:txid/outspends` reply covers. Without
+/// `start_index` a tx over [`MAX_TX_OUTSPENDS_PAGE`] outputs is a 400, so an
+/// Esplora client never takes a short array for the whole tx. A
+/// `start_index` past the last output is a 404, except 0 on a tx with none.
+#[allow(clippy::result_large_err)] // axum Response
+#[doc(hidden)]
+pub fn outspends_page(start: Option<u32>, nout: u32) -> Result<(u32, u32), Response> {
+    match start {
+        None if nout > MAX_TX_OUTSPENDS_PAGE => Err((
+            StatusCode::BAD_REQUEST,
+            "Too many outputs; page with start_index",
+        )
+            .into_response()),
+        None => Ok((0, nout)),
+        Some(s) if s > 0 && s >= nout => {
+            Err((StatusCode::NOT_FOUND, "start index out of range").into_response())
+        }
+        Some(s) => Ok((s, s.saturating_add(MAX_TX_OUTSPENDS_PAGE).min(nout))),
+    }
+}
+
 /// Append the JSON array of `txid`'s first `nout` outspends to `out`. Each
 /// slot is encoded as it is read, so no `Value` tree is held for the array.
 #[doc(hidden)]
@@ -868,12 +910,64 @@ pub fn write_outspends(
     nout: u32,
     view: Option<&rbitcoin_query::ChainView>,
 ) -> Result<(), rbitcoin_query::QueryError> {
+    write_outspends_range(out, query, mempool, txid, 0, nout, view)
+}
+
+/// Like [`write_outspends`] for vouts `first..end`. Each slot is what
+/// [`outspend_json`] answers, but the txid is resolved and the spent slots
+/// are read once for the range, and each spending tx's txid and each
+/// block's status are read once however many outputs share them.
+#[doc(hidden)]
+pub fn write_outspends_range(
+    out: &mut Vec<u8>,
+    query: &Query,
+    mempool: Option<&MempoolHub>,
+    txid: &[u8; 32],
+    first: u32,
+    end: u32,
+    view: Option<&rbitcoin_query::ChainView>,
+) -> Result<(), rbitcoin_query::QueryError> {
+    let confirmed = match view {
+        Some(v) => query.first_strong_spenders_at_range(txid, first, end, Some(v.height.0))?,
+        None => Vec::new(),
+    };
+    let mut spend_txids: HashMap<Fk, String> = HashMap::new();
+    let mut statuses: HashMap<u32, Value> = HashMap::new();
     out.push(b'[');
-    for vout in 0..nout {
-        if vout > 0 {
+    for vout in first..end {
+        if vout > first {
             out.push(b',');
         }
-        let slot = outspend_json(query, mempool, txid, vout, view)?;
+        let hit = confirmed
+            .get((vout - first) as usize)
+            .and_then(Option::as_ref);
+        let slot = match (hit, view) {
+            (Some((p, height)), Some(view)) => {
+                let spend_txid = match spend_txids.get(&p.spending_tx_fk) {
+                    Some(t) => t.clone(),
+                    None => {
+                        let t = block_hash_hex(&query.store().txs.body_txid(p.spending_tx_fk)?);
+                        spend_txids.insert(p.spending_tx_fk, t.clone());
+                        t
+                    }
+                };
+                let status = match statuses.get(height) {
+                    Some(s) => s.clone(),
+                    None => {
+                        let s = confirmed_status_json_in(query, *height, view)?;
+                        statuses.insert(*height, s.clone());
+                        s
+                    }
+                };
+                json!({
+                    "spent": true,
+                    "txid": spend_txid,
+                    "vin": p.spending_vin,
+                    "status": status,
+                })
+            }
+            _ => outspend_json(query, mempool, txid, vout, None)?,
+        };
         serde_json::to_writer(&mut *out, &slot).expect("Value encodes into a Vec");
     }
     out.push(b']');
