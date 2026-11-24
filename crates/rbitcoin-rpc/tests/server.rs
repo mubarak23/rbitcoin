@@ -1738,6 +1738,7 @@ async fn empty_work_queue_is_http_503() {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(0)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: true,
     };
@@ -1756,6 +1757,65 @@ async fn empty_work_queue_is_http_503() {
     let _ = std::fs::remove_dir_all(dir.path());
 }
 
+/// A built REST reply holds its bytes of the budget until its body is gone.
+/// While the budget is spent a new REST request is 503 and nothing is built.
+/// A reply larger than the whole budget still goes out alone.
+#[tokio::test]
+async fn unwritten_rest_replies_hold_the_byte_budget() {
+    const BUDGET: usize = 16;
+    let (ctx, dir) = http_wait_ctx();
+    let rest_reply_bytes = ReplyBytes::new(BUDGET);
+    let state = AppState {
+        ctx,
+        auth: RpcAuth::new("test-token"),
+        cookie: None,
+        work_queue: Arc::new(Semaphore::new(1)),
+        rest_queue: Arc::new(Semaphore::new(4)),
+        rest_reply_bytes: rest_reply_bytes.clone(),
+        rest: true,
+        require_auth: true,
+    };
+    let get = || {
+        rest_entry(
+            State(state.clone()),
+            axum::http::Request::get("/rest/chaininfo.json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+    };
+    let held = get().await;
+    assert_eq!(held.status(), StatusCode::OK);
+    assert_eq!(
+        rest_reply_bytes.available(),
+        0,
+        "a reply over the budget takes all of it"
+    );
+
+    let refused = get().await;
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(refused.into_body(), 64)
+        .await
+        .expect("503 body");
+    assert_eq!(&body[..], b"Work queue depth exceeded\n");
+
+    let body = axum::body::to_bytes(held.into_body(), 1 << 20)
+        .await
+        .expect("held body");
+    let v: serde_json::Value = serde_json::from_slice(&body).expect("chaininfo json");
+    assert_eq!(v["chain"], "regtest");
+    assert_eq!(rest_reply_bytes.available(), BUDGET);
+
+    let again = get().await;
+    assert_eq!(again.status(), StatusCode::OK);
+    drop(again);
+    assert_eq!(
+        rest_reply_bytes.available(),
+        BUDGET,
+        "a dropped body returns its bytes"
+    );
+    let _ = std::fs::remove_dir_all(dir.path());
+}
+
 /// A later long-poll drops the work-queue slot. A slot taken during the wait
 /// is waited for, not reported as a queue error. The calls that follow still
 /// run. A POST that has not run a call is still 503.
@@ -1769,6 +1829,7 @@ async fn batch_waits_to_retake_the_queue_after_a_long_poll() {
         cookie: None,
         work_queue: Arc::clone(&work_queue),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: true,
     };
@@ -1835,6 +1896,7 @@ async fn full_work_queue_is_503_before_the_store_budget() {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(0)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: true,
     };
@@ -1865,6 +1927,7 @@ async fn long_poll_queue_full_is_503_before_the_store_budget() {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(0)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: true,
     };
@@ -1898,6 +1961,7 @@ async fn getblockcount_finishes_while_the_store_permit_is_held() {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(4)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: false,
     };
@@ -1919,6 +1983,7 @@ async fn getblockcount_finishes_while_the_store_permit_is_held() {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(4)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: false,
     };
@@ -1945,6 +2010,7 @@ async fn getblockcount_finishes_while_the_store_permit_is_held() {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(4)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: false,
     };
@@ -2000,6 +2066,7 @@ fn store_budget_wait_does_not_need_a_pool_thread() {
             cookie: None,
             work_queue: Arc::new(Semaphore::new(4)),
             rest_queue: Arc::new(Semaphore::new(1)),
+            rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
             rest: false,
             require_auth: false,
         };
@@ -2260,6 +2327,7 @@ pub(crate) fn gbt_app(ctx: Arc<rbitcoin_rpc::methods::RpcContext>) -> AppState {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(4)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: false,
     }
@@ -3449,6 +3517,7 @@ async fn earlier_wait_reports_the_tip_from_when_it_finished() {
         cookie: None,
         work_queue: Arc::new(Semaphore::new(4)),
         rest_queue: Arc::new(Semaphore::new(1)),
+        rest_reply_bytes: ReplyBytes::new(REST_REPLY_BYTES),
         rest: false,
         require_auth: false,
     };
