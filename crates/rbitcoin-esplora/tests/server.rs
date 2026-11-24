@@ -1552,6 +1552,26 @@ async fn asof_of_a_moved_view_is_404() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The bulk outspends reply carries the view its slots were read on, so the
+/// middleware checks that view, not its own earlier pin, after the body is
+/// built.
+#[test]
+fn bulk_outspends_reply_carries_its_view() {
+    let (dir, q) = temp_query("outspends-view");
+    let (h0, t0) = coinbase(0, Fk::NULL, None);
+    q.connect_block(Height(0), &h0, &[t0]).unwrap();
+    let q = Arc::new(q);
+    let st = join_only_state(Arc::clone(&q), Arc::new(Mutex::new(JoinCache::default())));
+    let resp = rbitcoin_esplora::internal::outspends_for_txid_opts(&st, vec![Some([0xab; 32])]);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tip = q.pin_chain_view().unwrap().expect("tip view");
+    assert_eq!(
+        resp.extensions().get::<rbitcoin_query::ChainView>(),
+        Some(&tip)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn body_at_max_is_not_413_and_300_slots_fit() {
     // Body length against `max_body`, and the 300-element outs list. The routes call these checks.

@@ -4,8 +4,8 @@ use crate::handlers::{confirmed_output_count, spawn_join, write_outspends};
 #[cfg(unix)]
 use crate::handlers::{outspend_json, resolve_address_sh, sh_info_reply};
 use crate::server::{
-    block_hash_hex, json_bytes_reply, json_reply_here, parse_hash32, pin_or_reject, store_err,
-    stored_tx_listing, AppState,
+    block_hash_hex, json_bytes_reply, json_reply_here, maybe_attach_view, parse_hash32,
+    pin_or_reject, store_err, stored_tx_listing, AppState,
 };
 #[cfg(unix)]
 use crate::server::{not_found, parse_scripthash, AsOf};
@@ -634,7 +634,9 @@ pub fn outspends_for_txid_opts(st: &AppState, ids: Vec<Option<[u8; 32]>>) -> Res
         }
     }
     body.push(b']');
-    json_bytes_reply(body)
+    // The middleware checks this view, the one the slots were read on, is
+    // still live once the body is built.
+    maybe_attach_view(json_bytes_reply(body), view)
 }
 
 #[cfg(unix)]
